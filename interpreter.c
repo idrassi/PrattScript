@@ -128,9 +128,15 @@ static int execute_source(const char* source) {
             interpreter_destroy(&interp);
             return 1;
         }
-        // A break or return at the top level is a runtime error.
+        // A break, continue or return at the top level is a runtime error.
         if (res.status == EXEC_BREAK) {
             runtime_error(&interp, "Cannot 'break' outside of a loop.");
+            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+            statement_vector_free(&program);
+            interpreter_destroy(&interp);
+            return 1;
+        } else if (res.status == EXEC_CONTINUE) {
+            runtime_error(&interp, "Cannot 'continue' outside of a loop.");
             fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
             statement_vector_free(&program);
             interpreter_destroy(&interp);
@@ -190,11 +196,13 @@ static void run_repl() {
                     fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
                     break;
                 }
-                // An unhandled break or return in the REPL is an error.
-                // Note: A function call returning a value results in EXEC_OK, so this
-                // correctly catches only top-level return statements.
+                // An unhandled break, continue or return in the REPL is an error.
                 if (res.status == EXEC_BREAK) {
                    runtime_error(&interp, "Cannot 'break' outside of a loop.");
+                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+                   break;
+                } else if (res.status == EXEC_CONTINUE) {
+                   runtime_error(&interp, "Cannot 'continue' outside of a loop.");
                    fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
                    break;
                 } else if (res.status == EXEC_RETURN) {

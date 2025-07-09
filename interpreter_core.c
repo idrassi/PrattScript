@@ -63,6 +63,7 @@ static void map_init(Map* map);
 #define OK_RESULT(v)     ((ExecResult){EXEC_OK,     (v)})
 #define RETURN_RESULT(v) ((ExecResult){EXEC_RETURN, (v)})
 #define BREAK_RESULT()   ((ExecResult){EXEC_BREAK,  make_nil()})
+#define CONTINUE_RESULT() ((ExecResult){EXEC_CONTINUE, make_nil()})
 #define ERROR_RESULT()   ((ExecResult){EXEC_ERROR,  make_nil()})
 
 // --- GC and Memory Management ---
@@ -823,7 +824,7 @@ static ExecResult call_value(Interpreter* interp, Value callee_val, size_t argc,
             
             if (result.status == EXEC_RETURN) return OK_RESULT(result.value);
             if (result.status == EXEC_OK) return OK_RESULT(make_nil()); // Implicit return nil.
-            return result; // Propagate error
+            return result; // Propagate error, break, continue
         }
     } else if (IS_BUILTIN(callee_val)) {
         Value builtin_result = AS_BUILTIN(callee_val)(interp, argc, args);
@@ -1290,8 +1291,13 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
                 if (!is_truthy(cond_res.value)) break;
 
                 ExecResult body_res = execute(interp, stmt->as.while_s.body);
+                
+                // Handle control flow statements
                 if (body_res.status == EXEC_BREAK) {
                     break; // Exit the loop due to a 'break' statement.
+                }
+                if (body_res.status == EXEC_CONTINUE) {
+                    continue; // Skip to the next iteration.
                 }
                 if (body_res.status != EXEC_OK) {
                     return body_res; // Propagate EXEC_RETURN or EXEC_ERROR.
@@ -1310,6 +1316,9 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
         }
         case ST_BREAK: {
             return BREAK_RESULT();
+        }
+        case ST_CONTINUE: {
+            return CONTINUE_RESULT();
         }
         case ST_FUNCTION: {
             Function* func = new_function(interp, stmt->as.func.param_count);

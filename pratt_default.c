@@ -456,6 +456,18 @@ static Statement *break_statement(Parser *p) {
     return s;
 }
 
+/*── Continue Statement: 'continue' ';' ─────────────────────────────────*/
+static Statement *continue_statement(Parser *p) {
+    Token keyword = p->next; // The 'continue' token
+    advance(p); // consume 'continue'
+    if (!consume(p, T_SEMICOLON, "';' after 'continue'")) return NULL;
+
+    Statement *s = new_statement(p, ST_CONTINUE);
+    if (!s) return NULL;
+    s->as.continue_s.keyword = keyword;
+    return s;
+}
+
 /*── If Statement: 'if' '(' condition ')' then ('else' else)? ───────────*/
 static Statement *if_statement(Parser *p) {
     advance(p); // consume 'if'
@@ -657,6 +669,7 @@ static Statement *function_statement(Parser *p) {
 Statement *parse_statement(Parser *p) {
     if (check(p, T_IF))       return if_statement(p);
     if (check(p, T_BREAK))    return break_statement(p);
+    if (check(p, T_CONTINUE)) return continue_statement(p);
     if (check(p, T_VAR))      return declaration(p);
     if (check(p, T_WHILE))    return while_statement(p);
     if (check(p, T_RETURN))   return return_statement(p);
@@ -720,6 +733,7 @@ const char *default_token_name(TokenType t) {
         case T_WHILE:     return "'while'";
         case T_RETURN:    return "'return'";
         case T_BREAK:     return "'break'";
+        case T_CONTINUE:  return "'continue'";
         case T_FUNCTION:  return "'function'";
         case T_TRUE:      return "'true'";
         case T_FALSE:     return "'false'";
@@ -771,6 +785,7 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_WHILE]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_RETURN]    = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_BREAK]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
+    [T_CONTINUE]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_FUNCTION]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
 
     // Assignment is handled by expression_statement.

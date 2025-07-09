@@ -187,6 +187,7 @@ typedef enum {
     EXEC_OK,      // Normal execution, continue
     EXEC_RETURN,  // A return statement was executed
     EXEC_BREAK,   // A break statement was executed
+    EXEC_CONTINUE,// A continue statement was executed
     EXEC_ERROR,   // A runtime error occurred
 } ExecStatus;
 

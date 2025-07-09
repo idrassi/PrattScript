@@ -265,6 +265,9 @@ static void print_statement_ast(Statement *stmt, int depth) {
         case ST_BREAK:
             printf("BREAK_STMT\n");
             break;
+        case ST_CONTINUE:
+            printf("CONTINUE_STMT\n");
+            break;
         case ST_RETURN:
             printf("RETURN_STMT:\n");
             if(stmt->as.ret.value) print_ast_indent(stmt->as.ret.value, depth+1);
@@ -1259,6 +1262,9 @@ static RunResult parse_and_execute(Interpreter* interp, const char* source) {
         if (res.status == EXEC_BREAK) {
             runtime_error(interp, "Cannot 'break' outside of a loop.");
             break;
+        } else if (res.status == EXEC_CONTINUE) {
+            runtime_error(interp, "Cannot 'continue' outside of a loop.");
+            break;
         } else if (res.status == EXEC_RETURN) {
             runtime_error(interp, "Cannot 'return' from top-level code.");
             break;
@@ -1500,9 +1506,81 @@ static void test_break_statement_parsing() {
     TEST_PASS();
 }
 
+static void test_continue_statement_parsing() {
+    TEST_START("Parsing: continue statement");
+    Interpreter interp;
+    Parser p;
+    Statement *ast = parse_program_test("while(true) { continue; }", &p, &interp);
+    ASSERT(ast && ast->type == ST_BLOCK && ast->as.block.count == 1, "Expected single while stmt in block");
+
+    Statement *while_stmt = ast->as.block.list[0];
+    ASSERT(while_stmt->type == ST_WHILE, "Expected while statement");
+    ASSERT(while_stmt->as.while_s.body, "While should have a body");
+    ASSERT(while_stmt->as.while_s.body->type == ST_BLOCK, "While body should be a block");
+
+    Statement *block_body = while_stmt->as.while_s.body;
+    ASSERT(block_body->as.block.count == 1, "Block should have one statement");
+
+    Statement *continue_stmt = block_body->as.block.list[0];
+    ASSERT(continue_stmt->type == ST_CONTINUE, "Expected continue statement inside loop body");
+
+    parser_destroy(&p);
+    interpreter_destroy(&interp);
+    TEST_PASS();
+}
+
+static void test_simple_continue() {
+    const char* source =
+        "var i = 0;"
+        "var sum = 0;"
+        "while (i < 5) {"
+        "  i = i + 1;"
+        "  if (i == 3) continue;"
+        "  sum = sum + i;"
+        "}"
+        "println(sum);"; // Should be 1 + 2 + 4 + 5 = 12
+    const char* expected = "12\n";
+    run_interpreter_test("Control Flow: simple continue", source, expected);
+}
+
+static void test_nested_continue() {
+    const char* source =
+        "var i = 0;"
+        "while (i < 2) {"
+        "  println(\"i=\" + i);"
+        "  var j = 0;"
+        "  while (j < 4) {"
+        "    j = j + 1;"
+        "    if (j == 2) continue;"
+        "    print(\"  j=\" + j);"
+        "  }"
+        "  println(\"\");"
+        "  i = i + 1;"
+        "}"
+        "println(\"finished\");";
+    const char* expected = "i=0\n  j=1  j=3  j=4\ni=1\n  j=1  j=3  j=4\nfinished\n";
+    run_interpreter_test("Control Flow: nested continue only affects inner loop", source, expected);
+}
+
+static void test_continue_and_break() {
+    const char* source =
+        "var i = 0;"
+        "while (i < 10) {"
+        "  i = i + 1;"
+        "  if (i < 5) continue;"
+        "  if (i == 8) break;"
+        "  print(i);"
+        "}"
+        "println(\"\");"; // should print 567
+    const char* expected = "567\n";
+    run_interpreter_test("Control Flow: continue and break together", source, expected);
+}
+
 static void test_control_flow_error() {
     run_interpreter_error_test("Control Flow Error: break outside loop", "break;", "Cannot 'break' outside of a loop.");
+    run_interpreter_error_test("Control Flow Error: continue outside loop", "continue;", "Cannot 'continue' outside of a loop.");
     run_interpreter_error_test("Control Flow Error: break in function outside loop", "function f() { break; } f();", "Cannot 'break' outside of a loop.");
+    run_interpreter_error_test("Control Flow Error: continue in function outside loop", "function f() { continue; } f();", "Cannot 'continue' outside of a loop.");
 }
 
 // Test suite for functions and return
@@ -1987,6 +2065,12 @@ static void test_comment_handling() {
                          "1\n2\n");
 }
 
+static void run_continue_tests() {
+    test_continue_statement_parsing();
+    test_simple_continue();
+    test_nested_continue();
+    test_continue_and_break();
+}
 
 /*── Run all tests ───────────────────────────────────────────────────────*/
 static void run_all_tests() {
@@ -2103,6 +2187,10 @@ static void run_all_tests() {
     test_simple_break();
     test_nested_break();
     test_break_does_not_exit_function();
+    
+    printf("\nContinue Statement Tests\n");
+    printf("------------------------\n");
+    run_continue_tests();
 
     // Run function tests
     test_function_and_return();
