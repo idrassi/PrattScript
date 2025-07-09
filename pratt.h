@@ -121,7 +121,7 @@ struct ASTNode {
 
 /*── Statement node definitions ───────────────────────────────────────────*/
 typedef struct Statement Statement;
-typedef enum { ST_EXPR, ST_VAR, ST_ASSIGN, ST_BLOCK,
+typedef enum { ST_EXPR, ST_VAR, ST_ASSIGN, ST_BLOCK, ST_BREAK,
                ST_IF,  ST_WHILE, ST_RETURN, ST_FUNCTION } StatementType;
 
 struct Statement {
@@ -133,6 +133,7 @@ struct Statement {
         struct { ASTNode *target; ASTNode *value; } assign;
         struct { ASTNode *expr; } expr;
         struct { ASTNode *condition; Statement *then_branch, *else_branch; } if_s;
+        struct { Token keyword; } break_s;
         struct { ASTNode *condition; Statement *body; } while_s;
         struct { Statement **list; size_t count; } block;
         struct { ASTNode *value; Token keyword; } ret;

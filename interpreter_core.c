@@ -59,14 +59,18 @@ static void map_init(Map* map);
 // Helper macros for creating ExecResult structs
 #define OK_RESULT(v) ((ExecResult){EXEC_OK, (v)})
 #define RETURN_RESULT(v) ((ExecResult){EXEC_RETURN, (v)})
-#define ERROR_RESULT() ((ExecResult){EXEC_ERROR, make_nil()})
+// --- Helper macros for creating ExecResult structs ---
+#define OK_RESULT(v)     ((ExecResult){EXEC_OK,     (v)})
+#define RETURN_RESULT(v) ((ExecResult){EXEC_RETURN, (v)})
+#define BREAK_RESULT()   ((ExecResult){EXEC_BREAK,  make_nil()})
+#define ERROR_RESULT()   ((ExecResult){EXEC_ERROR,  make_nil()})
 
 // --- GC and Memory Management ---
 static void* reallocate(Interpreter* interp, void* pointer, size_t old_size, size_t new_size);
 void collect_garbage(Interpreter* interp);
 static void mark_value(Interpreter* interp, Value value);
 static void mark_object(Interpreter* interp, Obj* object);
-static void runtime_error(Interpreter *interp, const char *format, ...);
+void runtime_error(Interpreter *interp, const char *format, ...);
 
 
 static void* reallocate(Interpreter* interp, void* pointer, size_t old_size, size_t new_size) {
@@ -690,7 +694,7 @@ oom:
 }
 
 
-static void runtime_error(Interpreter *interp, const char *format, ...) {
+void runtime_error(Interpreter *interp, const char *format, ...) {
     interp->had_error = 1;
     va_list args;
     va_start(args, format);
@@ -1286,7 +1290,12 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
                 if (!is_truthy(cond_res.value)) break;
 
                 ExecResult body_res = execute(interp, stmt->as.while_s.body);
-                if (body_res.status != EXEC_OK) return body_res;
+                if (body_res.status == EXEC_BREAK) {
+                    break; // Exit the loop due to a 'break' statement.
+                }
+                if (body_res.status != EXEC_OK) {
+                    return body_res; // Propagate EXEC_RETURN or EXEC_ERROR.
+                }
             }
             break;
         }
@@ -1298,6 +1307,9 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
                 return_value = value_res.value;
             }
             return RETURN_RESULT(return_value);
+        }
+        case ST_BREAK: {
+            return BREAK_RESULT();
         }
         case ST_FUNCTION: {
             Function* func = new_function(interp, stmt->as.func.param_count);

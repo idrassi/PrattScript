@@ -186,6 +186,7 @@ typedef struct {
 typedef enum {
     EXEC_OK,      // Normal execution, continue
     EXEC_RETURN,  // A return statement was executed
+    EXEC_BREAK,   // A break statement was executed
     EXEC_ERROR,   // A runtime error occurred
 } ExecStatus;
 
@@ -219,6 +220,7 @@ struct Interpreter {
 
 // Public API
 ObjEnv* new_env_obj(Interpreter *interp, ObjEnv* parent);
+void runtime_error(Interpreter *interp, const char *format, ...);
 void interpreter_init(Interpreter *interp, size_t initial_arena_size);
 void interpreter_destroy(Interpreter *interp);
 ExecResult eval(Interpreter *interp, ASTNode *node);

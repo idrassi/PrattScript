@@ -444,6 +444,18 @@ static Statement *new_statement(Parser *p, StatementType type) {
     return s;
 }
 
+/*── Break Statement: 'break' ';' ───────────────────────────────────────*/
+static Statement *break_statement(Parser *p) {
+    Token keyword = p->next; // The 'break' token
+    advance(p); // consume 'break'
+    if (!consume(p, T_SEMICOLON, "';' after 'break'")) return NULL;
+
+    Statement *s = new_statement(p, ST_BREAK);
+    if (!s) return NULL;
+    s->as.break_s.keyword = keyword;
+    return s;
+}
+
 /*── If Statement: 'if' '(' condition ')' then ('else' else)? ───────────*/
 static Statement *if_statement(Parser *p) {
     advance(p); // consume 'if'
@@ -644,6 +656,7 @@ static Statement *function_statement(Parser *p) {
 /*── Top-level Statement Dispatcher ─────────────────────────────────────*/
 Statement *parse_statement(Parser *p) {
     if (check(p, T_IF))       return if_statement(p);
+    if (check(p, T_BREAK))    return break_statement(p);
     if (check(p, T_VAR))      return declaration(p);
     if (check(p, T_WHILE))    return while_statement(p);
     if (check(p, T_RETURN))   return return_statement(p);
@@ -706,6 +719,7 @@ const char *default_token_name(TokenType t) {
         case T_ELSE:      return "'else'";
         case T_WHILE:     return "'while'";
         case T_RETURN:    return "'return'";
+        case T_BREAK:     return "'break'";
         case T_FUNCTION:  return "'function'";
         case T_TRUE:      return "'true'";
         case T_FALSE:     return "'false'";
@@ -756,6 +770,7 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_ELSE]      = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_WHILE]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_RETURN]    = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
+    [T_BREAK]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_FUNCTION]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
 
     // Assignment is handled by expression_statement.

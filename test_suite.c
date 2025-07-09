@@ -262,6 +262,9 @@ static void print_statement_ast(Statement *stmt, int depth) {
             for (int i=0; i<depth+1; ++i) printf("  "); printf("BODY:\n");
             print_statement_ast(stmt->as.while_s.body, depth+2);
             break;
+        case ST_BREAK:
+            printf("BREAK_STMT\n");
+            break;
         case ST_RETURN:
             printf("RETURN_STMT:\n");
             if(stmt->as.ret.value) print_ast_indent(stmt->as.ret.value, depth+1);
@@ -1256,8 +1259,15 @@ static void run_interpreter_test(const char* name, const char* source, const cha
     // --- Interpret ---
     if (!had_error) {
         for (size_t i = 0; i < num_statements; ++i) {
-            execute(&interp, program_statements[i]);
+            ExecResult res = execute(&interp, program_statements[i]);
             if (interp.had_error) break;
+            if (res.status == EXEC_BREAK) {
+                runtime_error(&interp, "Cannot 'break' outside of a loop.");
+                break;
+            } else if (res.status == EXEC_RETURN) {
+                runtime_error(&interp, "Cannot 'return' from top-level code.");
+                break;
+            }
         }
     }
 
@@ -1322,8 +1332,15 @@ static void run_interpreter_error_test(const char* name, const char* source, con
     // --- Interpret ---
     if (!parser.had_error) {
         for (size_t i = 0; i < num_statements; ++i) {
-            execute(&interp, program_statements[i]);
+            ExecResult res = execute(&interp, program_statements[i]);
             if (interp.had_error) break;
+            if (res.status == EXEC_BREAK) {
+                runtime_error(&interp, "Cannot 'break' outside of a loop.");
+                break;
+            } else if (res.status == EXEC_RETURN) {
+                runtime_error(&interp, "Cannot 'return' from top-level code.");
+                break;
+            }
         }
     }
 
@@ -1367,8 +1384,15 @@ static void run_gc_test(const char* name, const char* source, bool (*check_fn)(I
 
     if (!parser.had_error) {
         for (size_t i = 0; i < num_statements; ++i) {
-            execute(&interp, program_statements[i]);
+            ExecResult res = execute(&interp, program_statements[i]);
             if (interp.had_error) break;
+            if (res.status == EXEC_BREAK) {
+                runtime_error(&interp, "Cannot 'break' outside of a loop.");
+                break;
+            } else if (res.status == EXEC_RETURN) {
+                runtime_error(&interp, "Cannot 'return' from top-level code.");
+                break;
+            }
         }
     }
     
@@ -1481,6 +1505,34 @@ static void test_while_loop() {
     run_interpreter_test("Interpreter: while loop", source, expected);
 }
 
+static void test_break_statement_parsing() {
+    TEST_START("Parsing: break statement");
+    Interpreter interp;
+    Parser p;
+    Statement *ast = parse_program_test("while(true) { break; }", &p, &interp);
+    ASSERT(ast && ast->type == ST_BLOCK && ast->as.block.count == 1, "Expected single while stmt in block");
+
+    Statement *while_stmt = ast->as.block.list[0];
+    ASSERT(while_stmt->type == ST_WHILE, "Expected while statement");
+    ASSERT(while_stmt->as.while_s.body, "While should have a body");
+    ASSERT(while_stmt->as.while_s.body->type == ST_BLOCK, "While body should be a block");
+
+    Statement *block_body = while_stmt->as.while_s.body;
+    ASSERT(block_body->as.block.count == 1, "Block should have one statement");
+
+    Statement *break_stmt = block_body->as.block.list[0];
+    ASSERT(break_stmt->type == ST_BREAK, "Expected break statement inside loop body");
+
+    parser_destroy(&p);
+    interpreter_destroy(&interp);
+    TEST_PASS();
+}
+
+static void test_control_flow_error() {
+    run_interpreter_error_test("Control Flow Error: break outside loop", "break;", "Cannot 'break' outside of a loop.");
+    run_interpreter_error_test("Control Flow Error: break in function outside loop", "function f() { break; } f();", "Cannot 'break' outside of a loop.");
+}
+
 // Test suite for functions and return
 static void test_function_and_return() {
     const char* source =
@@ -1516,6 +1568,45 @@ static void test_function_recursion() {
         "println(fib(8));";
     const char* expected = "21\n";
     run_interpreter_test("Functions: recursion (fibonacci)", source, expected);
+}
+
+static void test_simple_break() {
+    const char* source =
+        "var i = 0;"
+        "while (i < 5) {"
+        "  if (i == 3) break;"
+        "  println(i);"
+        "  i = i + 1;"
+        "}"
+        "println(\"done\");";
+    const char* expected = "0\n1\n2\ndone\n";
+    run_interpreter_test("Control Flow: simple break", source, expected);
+}
+
+static void test_nested_break() {
+    const char* source =
+        "var i = 0;"
+        "while (i < 2) {"
+        "  println(\"i=\" + i);"
+        "  var j = 0;"
+        "  while (j < 3) {"
+        "    if (j == 1) break;"
+        "    println(\"  j=\" + j);"
+        "    j = j + 1;"
+        "  }"
+        "  i = i + 1;"
+        "}"
+        "println(\"finished\");";
+    const char* expected = "i=0\n  j=0\ni=1\n  j=0\nfinished\n";
+    run_interpreter_test("Control Flow: nested break only exits inner loop", source, expected);
+}
+
+static void test_break_does_not_exit_function() {
+    const char* source =
+        "function test() { var i = 0; while (i < 5) { if (i == 2) break; i=i+1; } return \"broken at \" + i; }"
+        "println(test());";
+    const char* expected = "broken at 2\n";
+    run_interpreter_test("Control Flow: break does not exit function", source, expected);
 }
 
 static void test_return_from_loop() {
@@ -2029,20 +2120,28 @@ static void run_all_tests() {
     printf("-----------------------------\n");
     test_declaration_and_use();
     test_shadowing_in_blocks();
+    test_break_statement_parsing();
+
+    printf("\nInterpreter Execution & Control Flow Tests\n");
+    printf("------------------------------------------\n");
+    test_variable_shadowing();
     test_if_else_nesting();
     test_if_without_else();
-
-    printf("\nInterpreter Execution Tests\n");
-    printf("---------------------------\n");
-    test_variable_shadowing();
     test_while_loop();
+    test_simple_break();
+    test_nested_break();
+    test_break_does_not_exit_function();
 
     // Run function tests
     test_function_and_return();
     test_function_closure();
     test_function_recursion();
     test_return_from_loop();
-    
+
+    printf("\nControl Flow Error Tests\n");
+    printf("--------------------------\n");
+    test_control_flow_error();
+
     // Tests for composite types
     printf("\nComposite Type Tests\n");
     printf("----------------------\n");

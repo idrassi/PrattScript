@@ -121,8 +121,22 @@ static int execute_source(const char* source) {
 
     // 3. Interpret the program
     for (int i = 0; i < program.count; i++) {
-        execute(&interp, program.statements[i]);
+        ExecResult res = execute(&interp, program.statements[i]);
         if (interp.had_error) {
+            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+            statement_vector_free(&program);
+            interpreter_destroy(&interp);
+            return 1;
+        }
+        // A break or return at the top level is a runtime error.
+        if (res.status == EXEC_BREAK) {
+            runtime_error(&interp, "Cannot 'break' outside of a loop.");
+            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+            statement_vector_free(&program);
+            interpreter_destroy(&interp);
+            return 1;
+        } else if (res.status == EXEC_RETURN) {
+            runtime_error(&interp, "Cannot 'return' from top-level code.");
             fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
             statement_vector_free(&program);
             interpreter_destroy(&interp);
@@ -171,20 +185,22 @@ static void run_repl() {
             }
             if (stmt) {
                 ExecResult res = execute(&interp, stmt);
-                // For a REPL, it's conventional to print the value of the last expression statement.
-                if (stmt->type == ST_EXPR) {
-                   // Note: `eval` would be more appropriate here, but execute() is what we have.
-                   // A proper REPL might `eval` and `print` if the statement is an EXPR_STMT.
-                }
 
                 if (interp.had_error) {
                     fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
                     break;
                 }
-                 if (res.status == EXEC_RETURN) {
-                    printf("=> ");
-                    print_value(res.value);
-                    printf("\n");
+                // An unhandled break or return in the REPL is an error.
+                // Note: A function call returning a value results in EXEC_OK, so this
+                // correctly catches only top-level return statements.
+                if (res.status == EXEC_BREAK) {
+                   runtime_error(&interp, "Cannot 'break' outside of a loop.");
+                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+                   break;
+                } else if (res.status == EXEC_RETURN) {
+                   runtime_error(&interp, "Cannot 'return' from top-level code.");
+                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
+                   break;
                 }
             }
         }

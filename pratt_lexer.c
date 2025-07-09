@@ -44,6 +44,7 @@ typedef struct {
 } Keyword;
 
 static Keyword keywords[] = {
+    {"break",  T_BREAK},
     {"else",   T_ELSE},
     {"false",  T_FALSE},
     {"function", T_FUNCTION},
