@@ -708,6 +708,7 @@ typedef struct { const char* name; BuiltinFn fn; } BuiltinDef;
 
 static Value builtin_typeof(Interpreter*, size_t, Value*);
 static Value builtin_clock(Interpreter*, size_t, Value*);
+static Value builtin_time(Interpreter*, size_t, Value*);
 static Value builtin_exit(Interpreter*, size_t, Value*);
 static Value builtin_assert(Interpreter*, size_t, Value*);
 // Math object functions
@@ -715,6 +716,12 @@ static Value builtin_math_abs(Interpreter*, size_t, Value*);
 static Value builtin_math_floor(Interpreter*, size_t, Value*);
 static Value builtin_math_ceil(Interpreter*, size_t, Value*);
 static Value builtin_math_pow(Interpreter*, size_t, Value*);
+static Value builtin_math_sqrt(Interpreter*, size_t, Value*);
+static Value builtin_math_sin(Interpreter*, size_t, Value*);
+static Value builtin_math_cos(Interpreter*, size_t, Value*);
+static Value builtin_math_tan(Interpreter*, size_t, Value*);
+static Value builtin_math_log(Interpreter*, size_t, Value*);
+static Value builtin_math_log10(Interpreter*, size_t, Value*);
 static Value builtin_math_random(Interpreter*, size_t, Value*);
 // String object functions
 static Value builtin_string_split(Interpreter*, size_t, Value*);
@@ -726,7 +733,6 @@ static Value builtin_array_join(Interpreter*, size_t, Value*);
 // Forward declare all built-in functions
 static Value builtin_print(Interpreter*, size_t, Value*);
 static Value builtin_println(Interpreter*, size_t, Value*);
-static Value builtin_sqrt(Interpreter*, size_t, Value*);
 static Value builtin_upper(Interpreter*, size_t, Value*);
 static Value builtin_lower(Interpreter*, size_t, Value*);
 static Value builtin_compare(Interpreter*, size_t, Value*);
@@ -743,7 +749,6 @@ static Value builtin_toNumber(Interpreter*, size_t, Value*);
 static BuiltinDef builtins[] = {
     {"print",   builtin_print},
     {"println", builtin_println},
-    {"sqrt",    builtin_sqrt},
     {"upper",   builtin_upper},
     {"lower",   builtin_lower},
     {"compare", builtin_compare},
@@ -755,6 +760,7 @@ static BuiltinDef builtins[] = {
     {"toNumber", builtin_toNumber},
     {"typeof",  builtin_typeof},
     {"clock",   builtin_clock},
+    {"time",    builtin_time},
     {"exit",    builtin_exit},
     {"assert",  builtin_assert},
     {NULL, NULL}
@@ -823,6 +829,12 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "floor", 5), make_builtin(builtin_math_floor));
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "ceil", 4), make_builtin(builtin_math_ceil));
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "pow", 3), make_builtin(builtin_math_pow));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "sqrt", 4), make_builtin(builtin_math_sqrt));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "sin", 3), make_builtin(builtin_math_sin));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "cos", 3), make_builtin(builtin_math_cos));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "tan", 3), make_builtin(builtin_math_tan));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "log", 3), make_builtin(builtin_math_log));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "log10", 5), make_builtin(builtin_math_log10));
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "random", 6), make_builtin(builtin_math_random));
     env_define(interp, interp->env, interpreter_intern_string(interp, "math", 4), make_obj((Obj*)math_object));
     pop_root(interp);
@@ -1680,11 +1692,6 @@ static Value builtin_println(Interpreter *interp, size_t argc, Value *args) {
     return make_nil();
 }
 
-static Value builtin_sqrt(Interpreter *interp, size_t argc, Value *args) {
-    if (argc != 1 || !IS_NUMERIC(args[0])) { runtime_error(interp, "sqrt() expects 1 number argument."); return make_nil(); }
-    return make_double(sqrt(AS_NUMBER(args[0])));
-}
-
 static Value builtin_upper(Interpreter *interp, size_t argc, Value *args) {
     if (argc != 1 || !IS_STRING(args[0])) { runtime_error(interp, "upper() expects 1 string argument."); return make_nil(); }
     
@@ -1837,6 +1844,19 @@ static Value builtin_clock(Interpreter *interp, size_t argc, Value* args) {
     return make_double((double)clock() / CLOCKS_PER_SEC);
 }
 
+static Value builtin_time(Interpreter *interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "time() expects 0 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    time_t now = time(NULL);
+    if (now == (time_t)-1) {
+        runtime_error(interp, "Failed to get current time.");
+        return make_nil();
+    }
+    return make_int((int64_t)now);
+}
+
 static Value builtin_exit(Interpreter *interp, size_t argc, Value* args) {
     if (argc > 1) {
         runtime_error(interp, "exit() expects 0 or 1 argument, but got %zu.", argc);
@@ -1901,6 +1921,69 @@ static Value builtin_math_pow(Interpreter* interp, size_t argc, Value* args) {
         return make_nil();
     }
     return make_double(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+}
+
+static Value builtin_math_sqrt(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.sqrt() expects 1 number argument.");
+        return make_nil();
+    }
+    double value = AS_NUMBER(args[0]);
+    if (value < 0) {
+        runtime_error(interp, "math.sqrt() cannot take negative numbers.");
+        return make_nil();
+    }
+    return make_double(sqrt(value));
+}
+
+static Value builtin_math_sin(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.sin() expects 1 number argument.");
+        return make_nil();
+    }
+    return make_double(sin(AS_NUMBER(args[0])));
+}
+
+static Value builtin_math_cos(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.cos() expects 1 number argument.");
+        return make_nil();
+    }
+    return make_double(cos(AS_NUMBER(args[0])));
+}
+
+static Value builtin_math_tan(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.tan() expects 1 number argument.");
+        return make_nil();
+    }
+    return make_double(tan(AS_NUMBER(args[0])));
+}
+
+static Value builtin_math_log(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.log() expects 1 number argument.");
+        return make_nil();
+    }
+    double value = AS_NUMBER(args[0]);
+    if (value <= 0) {
+        runtime_error(interp, "math.log() cannot take non-positive numbers.");
+        return make_nil();
+    }
+    return make_double(log(value));
+}
+
+static Value builtin_math_log10(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.log10() expects 1 number argument.");
+        return make_nil();
+    }
+    double value = AS_NUMBER(args[0]);
+    if (value <= 0) {
+        runtime_error(interp, "math.log10() cannot take non-positive numbers.");
+        return make_nil();
+    }
+    return make_double(log10(value));
 }
 
 static Value builtin_math_random(Interpreter* interp, size_t argc, Value* args) {
