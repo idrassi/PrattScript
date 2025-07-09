@@ -1781,6 +1781,52 @@ static void test_gc_string_concat_loop() {
     run_interpreter_test("GC: String concatenation loop", source, expected);
 }
 
+/*── Print Cycle Detection Tests ──────────────────────────────────────────*/
+static void test_print_cycle_detection() {
+    run_interpreter_test(
+        "Print: Simple Array Cycle",
+        "var a = [1]; push(a, a); println(a);",
+        "[1, [...]]\n"
+    );
+
+    // Note: Object key printing order depends on the hash map implementation.
+    // This test assumes a specific, stable order for "k" and "self".
+    run_interpreter_test(
+        "Print: Simple Object Cycle",
+        "var o = {\"k\": \"v\"}; o[\"self\"] = o; println(o);",
+        "{\"k\": v, \"self\": {...}}\n"
+    );
+
+    run_interpreter_test(
+        "Print: Mutual Cycle (Array -> Object)",
+        "var a = [1]; var o = {\"arr\": a}; push(a, o); println(a);",
+        "[1, {\"arr\": [...]}]\n"
+    );
+
+    run_interpreter_test(
+        "Print: Mutual Cycle (Object -> Array)",
+        "var a = [1]; var o = {\"arr\": a}; push(a, o); println(o);",
+        "{\"arr\": [1, {...}]}\n"
+    );
+
+    run_interpreter_test(
+        "Print: Non-cyclical diamond dependency",
+        "var root = []; var child = [1]; push(root, child); push(root, child); println(root);",
+        "[[1], [1]]\n"
+    );
+
+    run_interpreter_test(
+        "Print: Complex nested cycle",
+        "var a = [{}]; a[0][\"parent\"] = a; println(a);",
+        "[{\"parent\": [...]}]\n"
+    );
+    
+    run_interpreter_test(
+        "Print: Deeper cycle in object",
+        "var o = { a: { b: {} } }; o[\"a\"][\"b\"][\"c\"] = o; println(o);",
+        "{\"a\": {\"b\": {\"c\": {...}}}}\n"
+    );
+}
 
 
 /*── Run all tests ───────────────────────────────────────────────────────*/
@@ -1930,6 +1976,10 @@ static void run_all_tests() {
     test_gc_graph_collection();
     test_gc_closure_complex_root();
     test_gc_string_concat_loop();
+
+    printf("\nPrint Cycle Detection Tests\n");
+    printf("---------------------------\n");
+    test_print_cycle_detection();
 
     // Summary
     printf("\n==================================\n");

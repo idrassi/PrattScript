@@ -1285,13 +1285,86 @@ static Value builtin_toNumber(Interpreter *interp, size_t argc, Value *args) {
 }
 
 
-void print_value(Value value) {
+// --- Cycle Detection for Printing ---
+// A simple dynamic array to keep track of objects being visited during a print operation.
+typedef struct {
+    Obj** items;
+    int count;
+    int capacity;
+} PrintVisitor;
+
+static void visitor_init(PrintVisitor* visitor) {
+    visitor->items = NULL;
+    visitor->count = 0;
+    visitor->capacity = 0;
+}
+
+static void visitor_free(PrintVisitor* visitor) {
+    PRATT_FREE(visitor->items);
+    visitor_init(visitor);
+}
+
+// Check if an object pointer is already in the visitor's list.
+static bool visitor_contains(PrintVisitor* visitor, Obj* obj) {
+    for (int i = 0; i < visitor->count; i++) {
+        if (visitor->items[i] == obj) return true;
+    }
+    return false;
+}
+
+// Add an object pointer to the list.
+static void visitor_push(PrintVisitor* visitor, Obj* obj) {
+    if (visitor->capacity < visitor->count + 1) {
+        int old_capacity = visitor->capacity;
+        visitor->capacity = old_capacity < 8 ? 8 : old_capacity * 2;
+        visitor->items = PRATT_REALLOC(visitor->items, sizeof(Obj*) * visitor->capacity);
+        if (visitor->items == NULL) {
+            // A non-fatal error. The print will be incomplete, but the interpreter won't crash.
+            fprintf(stderr, "\n[prattscript-print-warning: out of memory tracking visited objects]\n");
+            visitor->capacity = 0; // Prevent further attempts.
+            return;
+        }
+    }
+    visitor->items[visitor->count++] = obj;
+}
+
+// Remove the most recently added object pointer.
+static void visitor_pop(PrintVisitor* visitor) {
+    if (visitor->count > 0) {
+        visitor->count--;
+    }
+}
+
+// Forward declaration for the recursive helper
+static void print_value_internal(Value value, PrintVisitor* visitor);
+
+// The internal recursive function that does the work.
+static void print_value_internal(Value value, PrintVisitor* visitor) {
     switch (value.type) {
         case VAL_NUMBER: printf("%g", AS_NUMBER(value)); break;
         case VAL_BOOL:   printf(AS_BOOL(value) ? "true" : "false"); break;
         case VAL_NIL:    printf("nil"); break;
         case VAL_BUILTIN: printf("<builtin>"); break;
-        case VAL_OBJ:
+        case VAL_OBJ: {
+            // Check for a cycle before proceeding.
+            if (visitor_contains(visitor, AS_OBJ(value))) {
+                if (IS_ARRAY(value)) {
+                    printf("[...]");
+                } else if (IS_OBJECT(value)) {
+                    printf("{...}");
+                } else {
+                    // This case should ideally not be hit for non-container types
+                    // like strings and functions, but it's a safe fallback.
+                    printf("<cycle>");
+                }
+                return;
+            }
+
+            // If it's a container, mark it as visited for the duration of this recursive branch.
+            if (IS_ARRAY(value) || IS_OBJECT(value)) {
+                visitor_push(visitor, AS_OBJ(value));
+            }
+
             switch (OBJ_TYPE(value)) {
                 case OBJ_STRING: printf("%s", AS_CSTRING(value)); break;
                 case OBJ_FUNCTION: printf("<fn %s>", AS_FUNCTION(value)->name->chars); break;
@@ -1299,7 +1372,7 @@ void print_value(Value value) {
                     ObjArray* array = AS_ARRAY(value);
                     printf("[");
                     for (int i = 0; i < array->count; i++) {
-                        print_value(array->values[i]);
+                        print_value_internal(array->values[i], visitor);
                         if (i < array->count - 1) printf(", ");
                     }
                     printf("]");
@@ -1312,18 +1385,35 @@ void print_value(Value value) {
                     for (int i = 0; i < obj->map.capacity; i++) {
                         if (obj->map.entries[i].key != NULL) {
                             if (printed > 0) printf(", ");
+                            // Key is a string, which cannot be part of a value cycle itself.
                             printf("\"%s\": ", obj->map.entries[i].key->chars);
-                            print_value(obj->map.entries[i].value);
+                            print_value_internal(obj->map.entries[i].value, visitor);
                             printed++;
                         }
                     }
                     printf("}");
                     break;
                 }
+                case OBJ_ENV: printf("[environment]"); break;
+            }
+
+            // Un-mark it after we are done printing its contents.
+            if (IS_ARRAY(value) || IS_OBJECT(value)) {
+                visitor_pop(visitor);
             }
             break;
+        }
     }
 }
+
+// The public API function. It sets up the context for cycle detection.
+void print_value(Value value) {
+    PrintVisitor visitor;
+    visitor_init(&visitor);
+    print_value_internal(value, &visitor);
+    visitor_free(&visitor);
+}
+
 
 static Value builtin_print(Interpreter *interp, size_t argc, Value *args) {
     if (argc != 1) { runtime_error(interp, "print() expects 1 argument, but got %zu.", argc); return make_nil(); }
