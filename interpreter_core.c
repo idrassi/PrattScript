@@ -706,11 +706,27 @@ void runtime_error(Interpreter *interp, const char *format, ...) {
 typedef struct { const char* name; BuiltinFn fn; } BuiltinDef;
 
 
+// Forward declare all built-in functions
+static Value builtin_print(Interpreter*, size_t, Value*);
+static Value builtin_println(Interpreter*, size_t, Value*);
+static Value builtin_upper(Interpreter*, size_t, Value*);
+static Value builtin_lower(Interpreter*, size_t, Value*);
+static Value builtin_compare(Interpreter*, size_t, Value*);
+static Value builtin_len(Interpreter*, size_t, Value*);
+static Value builtin_push(Interpreter*, size_t, Value*);
+static Value builtin_pop(Interpreter*, size_t, Value*);
+static Value builtin_keys(Interpreter*, size_t, Value*);
+static Value builtin_toString(Interpreter*, size_t, Value*);
+static Value builtin_toNumber(Interpreter*, size_t, Value*);
 static Value builtin_typeof(Interpreter*, size_t, Value*);
 static Value builtin_clock(Interpreter*, size_t, Value*);
 static Value builtin_time(Interpreter*, size_t, Value*);
 static Value builtin_exit(Interpreter*, size_t, Value*);
 static Value builtin_assert(Interpreter*, size_t, Value*);
+// GC object functions
+static Value builtin_gc_collect(Interpreter*, size_t, Value*);
+static Value builtin_gc_allocated(Interpreter*, size_t, Value*);
+static Value builtin_gc_next_gc(Interpreter*, size_t, Value*);
 // Math object functions
 static Value builtin_math_abs(Interpreter*, size_t, Value*);
 static Value builtin_math_floor(Interpreter*, size_t, Value*);
@@ -729,22 +745,6 @@ static Value builtin_string_trim(Interpreter*, size_t, Value*);
 // Array object functions
 static Value builtin_array_slice(Interpreter*, size_t, Value*);
 static Value builtin_array_join(Interpreter*, size_t, Value*);
-
-// Forward declare all built-in functions
-static Value builtin_print(Interpreter*, size_t, Value*);
-static Value builtin_println(Interpreter*, size_t, Value*);
-static Value builtin_upper(Interpreter*, size_t, Value*);
-static Value builtin_lower(Interpreter*, size_t, Value*);
-static Value builtin_compare(Interpreter*, size_t, Value*);
-static Value builtin_len(Interpreter*, size_t, Value*);
-static Value builtin_push(Interpreter*, size_t, Value*);
-static Value builtin_pop(Interpreter*, size_t, Value*);
-static Value builtin_keys(Interpreter*, size_t, Value*);
-static Value builtin_gc_collect(Interpreter*, size_t, Value*);
-static Value builtin_gc_allocated(Interpreter*, size_t, Value*);
-static Value builtin_gc_next_gc(Interpreter*, size_t, Value*);
-static Value builtin_toString(Interpreter*, size_t, Value*);
-static Value builtin_toNumber(Interpreter*, size_t, Value*);
 
 static BuiltinDef builtins[] = {
     {"print",   builtin_print},
@@ -2096,14 +2096,14 @@ static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
     }
     
     // --- Phase 1: Convert all elements to strings and calculate total length ---
-    // We must protect these new strings from GC.
+    // We must protect these new strings from GC. A temporary C array holds them.
     ObjString** strings = PRATT_MALLOC(sizeof(ObjString*) * array->count);
     if (!strings) { runtime_error(interp, "Out of memory."); return make_nil(); }
     
     size_t total_len = 0;
     for (int i = 0; i < array->count; i++) {
         // value_to_string might trigger GC, so we must protect all previously created strings.
-        // A simpler but less efficient way is to just root the values themselves.
+        // The safest way is to root each as it's created.
         if (IS_OBJ(array->values[i])) push_root(interp, AS_OBJ(array->values[i]));
         strings[i] = value_to_string(interp, array->values[i]);
         if (IS_OBJ(array->values[i])) pop_root(interp);
@@ -2118,7 +2118,7 @@ static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
     // --- Phase 2: Build the final string ---
     char* result_chars = PRATT_MALLOC(total_len + 1);
     if (!result_chars) {
-        for(int i=0; i < array->count; i++) pop_root(interp);
+        for(int i=0; i < array->count; i++) pop_root(interp); // Cleanup roots
         PRATT_FREE(strings);
         runtime_error(interp, "Out of memory.");
         return make_nil();
