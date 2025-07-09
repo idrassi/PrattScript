@@ -67,11 +67,14 @@ typedef struct {
 /*── Streaming lexer interface ─────────────────────────────────────────────*/
 typedef Token (*LexFn)(void *ctx);
 
+/*── Forward declaration of Statement struct ────────────────────────────*/
+typedef struct Statement Statement;
+
 /*── AST node definitions ─────────────────────────────────────────────────*/
 typedef struct ASTNode ASTNode;
 typedef enum {
     AST_NUMBER, AST_STRING, AST_IDENT, AST_BINARY, AST_UNARY, AST_TERNARY, AST_ASSIGN,
-    AST_CALL, AST_ARRAY, AST_OBJECT, AST_INDEX,
+    AST_CALL, AST_ARRAY, AST_OBJECT, AST_INDEX, AST_FUNCTION,
     AST_BOOL, AST_NIL, /* Special AST nodes for literals */
 } ASTNodeType;
 
@@ -96,6 +99,13 @@ typedef struct { ASTNode *callee; ASTNode **args; size_t argc; Token rparen; } A
 typedef struct { ASTNode **elements; size_t count; Token bracket; } ASTArray;
 typedef struct { const char** keys; ASTNode** values; size_t count; Token brace; } ASTObject;
 typedef struct { ASTNode *object; ASTNode *index; Token bracket; } ASTIndex;
+typedef struct {
+    const char *name; // Optional, for named function expressions
+    const char **params;
+    Token *param_toks;
+    size_t param_count;
+    Statement *body; // A ST_BLOCK
+} ASTFunction;
 typedef struct { ASTNode *target; ASTNode *value; Token op; } ASTAssign;
 typedef struct { int       value;      Token tok;  } ASTBool;
 typedef struct { Token     tok;                    } ASTNil;
@@ -115,6 +125,7 @@ struct ASTNode {
         ASTArray  array;
         ASTObject object;
         ASTIndex  index;
+        ASTFunction function;
         ASTBool   boolean;
         ASTNil    nil;
     } as;

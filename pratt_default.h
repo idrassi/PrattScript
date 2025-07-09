@@ -72,9 +72,11 @@ ASTNode *default_grouping_prefix (Parser *p);
 ASTNode *default_unary_prefix    (Parser *p);
 ASTNode *default_binary_infix    (Parser *p, ASTNode *left);
 ASTNode *default_ternary_infix   (Parser *p, ASTNode *left);
+ASTNode *default_function_expression_prefix(Parser *p);
 ASTNode *default_array_prefix    (Parser *p);
 ASTNode *default_object_prefix   (Parser *p);
 ASTNode *default_index_infix     (Parser *p, ASTNode *left);
+ASTNode *default_dot_infix       (Parser *p, ASTNode *left);
 
 
 /*── A token name provider for this default token set ───────────────────*/

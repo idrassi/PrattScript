@@ -201,6 +201,22 @@ static void print_ast_indent(ASTNode *node, int depth) {
             for (int i=0; i<depth+1; ++i) printf("  "); printf("INDEX:\n");
             print_ast_indent(node->as.index.index, depth + 2);
             break;
+        case AST_FUNCTION:
+            printf("FUNCTION_EXPR(%s)\n", node->as.function.name ? node->as.function.name : "<anonymous>");
+            if (node->as.function.param_count > 0) {
+                for (int i = 0; i < depth + 1; i++) printf("  ");
+                printf("PARAMS[%zu]:", node->as.function.param_count);
+                for (size_t i = 0; i < node->as.function.param_count; ++i) {
+                    printf(" %s", node->as.function.params[i]);
+               }
+                printf("\n");
+            }
+            if (node->as.function.body) {
+                for (int i = 0; i < depth + 1; i++) printf("  ");
+                printf("BODY:\n");
+               print_statement_ast(node->as.function.body, depth + 2);
+            }
+            break;
         case AST_ASSIGN:
             printf("ASSIGN(%.*s)\n", (int)node->as.assign.op.length, node->as.assign.op.start);
             for (int i=0; i<depth+1; ++i) printf("  "); printf("TARGET:\n");
@@ -1370,9 +1386,31 @@ static void run_interpreter_error_test(const char* name, const char* source, con
     
     // --- Cleanup ---
     interpreter_destroy(&interp);
-
+    
     TEST_PASS();
 }
+
+// Helper to test for expected parse errors
+static void run_parser_error_test(const char* name, const char* source, const char* expected_error_substr) {
+    TEST_START(name);
+
+    Interpreter interp;
+    interpreter_init(&interp, DEFAULT_INITIAL_ARENA_SIZE);
+
+    RunResult result = parse_and_execute(&interp, source);
+
+    if (!result.parse_error) {
+        TEST_FAIL("Expected a parse error, but none occurred.");
+    } else {
+        ASSERT(strstr(result.parse_error_message, expected_error_substr) != NULL,
+               "Parse error message mismatch.\nExpected substring: '%s'\nGot: '%s'",
+               expected_error_substr, result.parse_error_message);
+        TEST_PASS();
+    }
+    
+    interpreter_destroy(&interp);
+}
+
 
 // Helper for GC tests that need to inspect memory state
 static void run_gc_test(const char* name, const char* source, bool (*check_fn)(Interpreter*)) {
@@ -1767,6 +1805,72 @@ static void test_nested_structures() {
         "println(data[\"users\"][1][\"name\"]);";
     const char* expected = "Z\n";
     run_interpreter_test("Interpreter: Nested data structures", source, expected);
+}
+
+/*── Dot Syntax Tests ───────────────────────────────────────────────────*/
+static void test_dot_access_get() {
+    const char* source = "var o = { a: 123, b: \"hello\" }; println(o.a); println(o.b);";
+    const char* expected = "123\nhello\n";
+    run_interpreter_test("Dot: Get property", source, expected);
+}
+
+static void test_dot_access_set() {
+    const char* source = "var o = { a: 1 }; o.a = 99; o.b = \"new\"; println(o.a); println(o.b);";
+    const char* expected = "99\nnew\n";
+    run_interpreter_test("Dot: Set property", source, expected);
+}
+
+static void test_dot_access_chain() {
+    const char* source = "var o = { a: { b: { c: \"deep\" } } }; println(o.a.b.c);";
+    const char* expected = "deep\n";
+    run_interpreter_test("Dot: Chained access", source, expected);
+}
+
+static void test_dot_access_chain_assignment() {
+    const char* source = "var o = { a: { b: 1 } }; o.a.b = \"changed\"; println(o.a.b);";
+    const char* expected = "changed\n";
+    run_interpreter_test("Dot: Chained assignment", source, expected);
+}
+
+static void test_dot_mixed_with_call() {
+    const char* source = "var o = { method: function() { return 42; } }; println(o.method());";
+    const char* expected = "42\n";
+    run_interpreter_test("Dot: Mixed with function call", source, expected);
+}
+
+static void test_dot_mixed_with_index() {
+    const char* source = "var o = { data: [10, 20] }; o.data[1] = 99; println(o.data[1]);";
+    const char* expected = "99\n";
+    run_interpreter_test("Dot: Mixed with index access", source, expected);
+}
+
+static void test_dot_runtime_errors() {
+    const char* err_msg = "Can only index into arrays and objects.";
+    const char* array_err_msg = "Array index must be a number.";
+    run_interpreter_error_test("Dot: Access on nil", "var x=nil; x.prop;", err_msg);
+    run_interpreter_error_test("Dot: Access on number", "123.prop;", err_msg);
+    run_interpreter_error_test("Dot: Access on string", "\"hello\".prop;", err_msg);
+    run_interpreter_error_test("Dot: Access on array", "[].prop;", array_err_msg);
+    run_interpreter_error_test("Dot: Access on function", "function f(){ var a = 0;} f.prop;", err_msg);
+}
+
+static void test_dot_syntax_errors() {
+    const char* err_msg = "property name after '.'";
+    run_parser_error_test("Dot: Syntax error (number after dot)", "var o = {}; o.123;", err_msg);
+    run_parser_error_test("Dot: Syntax error (string after dot)", "var o = {}; o.\"prop\";", err_msg);
+    run_parser_error_test("Dot: Syntax error (EOF after dot)", "var o = {}; o.;", err_msg);
+    run_parser_error_test("Dot: Syntax error (operator after dot)", "var o = {}; o.+;", err_msg);
+}
+
+static void run_dot_syntax_tests() {
+    test_dot_access_get();
+    test_dot_access_set();
+    test_dot_access_chain();
+    test_dot_access_chain_assignment();
+    test_dot_mixed_with_call();
+    test_dot_mixed_with_index();
+    test_dot_runtime_errors();
+    test_dot_syntax_errors();
 }
 
 /*── Garbage Collector Tests ──────────────────────────────────────────*/
@@ -2297,6 +2401,10 @@ static void run_all_tests() {
     test_builtin_push_pop();
     test_builtin_keys();
     test_nested_structures();
+
+    printf("\nDot Syntax Tests\n");
+    printf("------------------\n");
+    run_dot_syntax_tests();
 
     printf("\nComparison Logic Tests\n");
     printf("------------------------\n");

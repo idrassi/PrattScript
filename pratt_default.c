@@ -420,6 +420,48 @@ static ASTNode *default_call_infix(Parser *p, ASTNode *callee) {
 }
 
 
+/*── infix: dot property access - expr '.' IDENT ───────────────────────*/
+ASTNode *default_dot_infix(Parser *p, ASTNode *left) {
+    Token dot_tok = p->cur; // The '.' token
+
+    if (!consume(p, T_IDENT, "property name after '.'")) {
+        return NULL;
+    }
+    Token property_tok = p->cur;
+
+    // To simplify the interpreter, we transform `obj.prop` into the
+    // same AST structure as `obj["prop"]`. This means creating an
+    // AST_STRING node for the property name and wrapping it all in an
+    // AST_INDEX node.
+
+    // 1. Create an AST_STRING node for the property identifier.
+    ASTNode *index_expr = new_node(p, AST_STRING);
+    if (!index_expr) return NULL;
+
+    // The string value needs to be copied into the arena from the token's lexeme.
+    char *value = arena_alloc(p->arena, property_tok.length + 1);
+    if (!value) {
+        parser_error(p, "Out of memory");
+        return NULL;
+    }
+    memcpy(value, property_tok.start, property_tok.length);
+    value[property_tok.length] = '\0';
+
+    index_expr->as.string.value = value;
+    index_expr->as.string.length = property_tok.length;
+    index_expr->as.string.tok = property_tok;
+
+    // 2. Create the wrapping AST_INDEX node.
+    ASTNode *n = new_node(p, AST_INDEX);
+    if (!n) return NULL;
+
+    n->as.index.object = left;
+    n->as.index.index = index_expr;
+    n->as.index.bracket = dot_tok; // Use the dot token for location info.
+
+    return n;
+}
+
 /*── infix: index access - expr '[' index_expr ']' ─────────────────────*/
 ASTNode *default_index_infix(Parser *p, ASTNode *object) {
     Token bracket = p->cur;
@@ -712,6 +754,74 @@ static Statement *function_statement(Parser *p) {
     return s;
 }
 
+// Function Expression: 'function' [IDENT] '(' params? ')' block
+ASTNode *default_function_expression_prefix(Parser *p) {
+    // The 'function' keyword was already consumed.
+    const char *name = NULL;
+
+    // Function expressions can be anonymous or named.
+    if (check(p, T_IDENT)) {
+        advance(p);
+        Token name_tok = p->cur;
+        Interpreter *interp = p->user_ctx;
+        ObjString *name_obj = interpreter_intern_string(interp, name_tok.start, name_tok.length);
+        if (!name_obj) { parser_error(p, "Out of memory"); return NULL; }
+        name = name_obj->chars;
+    }
+
+    if (!consume(p, T_LPAREN, "'(' after function name")) return NULL;
+
+    const char **params = NULL;
+    Token *param_toks = NULL;
+    size_t param_count = 0;
+    size_t param_capacity = 0;
+    Interpreter *interp = p->user_ctx;
+
+    if (!check(p, T_RPAREN)) {
+        do {
+           if (!consume(p, T_IDENT, "parameter name")) return NULL;
+            Token param_tok = p->cur;
+            ObjString *param_obj = interpreter_intern_string(interp, param_tok.start, param_tok.length);
+            if (!param_obj) { parser_error(p, "Out of memory"); return NULL; }
+            const char *param_name = param_obj->chars;
+
+            if (param_count >= param_capacity) {
+                size_t old_cap = param_capacity;
+                param_capacity = old_cap < 8 ? 8 : old_cap * 2;
+               const char **new_params = arena_alloc(p->arena, param_capacity * sizeof(const char*));
+                Token *new_toks = arena_alloc(p->arena, param_capacity * sizeof(Token));
+                if (!new_params || !new_toks) { parser_error(p, "Out of memory"); return NULL; }
+                if (params) memcpy(new_params, params, old_cap * sizeof(const char*));
+                if (param_toks) memcpy(new_toks, param_toks, old_cap * sizeof(Token));
+                params = new_params;
+                param_toks = new_toks;
+            }
+           params[param_count] = param_name;
+            param_toks[param_count] = param_tok;
+            param_count++;
+        } while (check(p, T_COMMA) && (advance(p), 1));
+    }
+
+    if (!consume(p, T_RPAREN, "')' after parameters")) return NULL;
+    if (!check(p, T_LBRACE)) {
+       parser_error(p, "Expected '{' before function body.");
+        return NULL;
+    }
+
+    Statement *body = parse_block(p);
+    if (!body) return NULL;
+
+    ASTNode *n = new_node(p, AST_FUNCTION);
+   if (!n) return NULL;
+
+    n->as.function.name = name;
+    n->as.function.params = params;
+    n->as.function.param_toks = param_toks;
+    n->as.function.param_count = param_count;
+    n->as.function.body = body;
+   return n;
+}
+
 /*── Top-level Statement Dispatcher ─────────────────────────────────────*/
 Statement *parse_statement(Parser *p) {
     if (check(p, T_IF))       return if_statement(p);
@@ -836,7 +946,7 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_RETURN]    = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_BREAK]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_CONTINUE]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
-    [T_FUNCTION]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
+    [T_FUNCTION]  = PRATT_RULE(default_function_expression_prefix, NULL, PREC_NONE, 0),
 
     // Assignment is handled by expression_statement.
     [T_EQUAL]     = PRATT_RULE(NULL, default_assignment_infix, PREC_ASSIGNMENT, 0),
@@ -870,7 +980,7 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_RPAREN]    = PRATT_RULE(NULL,                    NULL,                 PREC_NONE,   0),
     [T_RBRACKET]  = PRATT_RULE(NULL,                    NULL,                 PREC_NONE,   0),
     [T_RBRACE]    = PRATT_RULE(NULL,                    NULL,                 PREC_NONE,   0),
-    [T_DOT]       = PRATT_RULE(NULL,                    NULL,                 PREC_CALL,   0),
+    [T_DOT]       = PRATT_RULE(NULL,                    default_dot_infix,    PREC_CALL,   0),
     [T_COMMA]     = PRATT_RULE(NULL,                    NULL,                 PREC_NONE,   0),
     [T_SEMICOLON] = PRATT_RULE(NULL,                    NULL,                 PREC_NONE,   0),
 };

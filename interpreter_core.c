@@ -901,6 +901,28 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
             pop_root(interp);
             return OK_RESULT(make_obj((Obj*)object));
         }
+        case AST_FUNCTION: {
+            // This handles function *expressions* (e.g., var f = function() {})
+            // The logic is very similar to ST_FUNCTION in execute().
+            ASTFunction* fn_node = &node->as.function;
+           Function* func = new_function(interp, fn_node->param_count);
+            
+            // Name can be NULL for anonymous functions
+            if (fn_node->name) {
+                func->name = interpreter_intern_string(interp, fn_node->name, strlen(fn_node->name));
+            } else {
+               func->name = interpreter_intern_string(interp, "anonymous", 9);
+            }
+
+            func->arity = fn_node->param_count;
+           func->body = fn_node->body;
+            func->closure = interp->env;
+
+            for(size_t i = 0; i < func->arity; i++) {
+               func->params[i] = interpreter_intern_string(interp, fn_node->params[i], strlen(fn_node->params[i]));
+            }
+            return OK_RESULT(make_obj((Obj*)func));
+        }
         case AST_ASSIGN: {
             // Evaluate the right-hand side first.
             ExecResult value_res = eval(interp, node->as.assign.value);
@@ -915,12 +937,12 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                     return ERROR_RESULT();
                 }
             } else if (target->type == AST_INDEX) {
-                 // GC-Robustness: protect value during collection/index evaluation
+                // GC-Robustness: protect value during collection/index evaluation
                 if (IS_OBJ(value_res.value)) push_root(interp, AS_OBJ(value_res.value));
 
                 ExecResult col_res = eval(interp, target->as.index.object);
                 if (col_res.status != EXEC_OK) { if (IS_OBJ(value_res.value)) pop_root(interp); return col_res; }
-                
+
                 // GC-Robustness: protect collection during index evaluation
                 if (IS_OBJ(col_res.value)) push_root(interp, AS_OBJ(col_res.value));
                 ExecResult idx_res = eval(interp, target->as.index.index);
