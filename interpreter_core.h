@@ -74,9 +74,10 @@ typedef struct ObjEnv ObjEnv;
 typedef enum {
     VAL_BOOL,
     VAL_NIL,
-    VAL_NUMBER,
+    VAL_INT,
+    VAL_DOUBLE,
     VAL_BUILTIN,
-    VAL_OBJ      // All heap types are now VAL_OBJ
+    VAL_OBJ       // All heap types are now VAL_OBJ
 } ValueType;
 
 /*  Forward declaration for Value struct */
@@ -89,6 +90,7 @@ typedef struct Value {
     ValueType type;
     union {
         bool       boolean;
+        int64_t    integer;
         double     number;
         BuiltinFn  builtin;
         Obj*       obj; // Points to a GC-managed object
@@ -98,12 +100,18 @@ typedef struct Value {
 // Helper macros for working with Values
 #define IS_BOOL(value)    ((value).type == VAL_BOOL)
 #define IS_NIL(value)     ((value).type == VAL_NIL)
-#define IS_NUMBER(value)  ((value).type == VAL_NUMBER)
+#define IS_INT(value)     ((value).type == VAL_INT)
+#define IS_DOUBLE(value)  ((value).type == VAL_DOUBLE)
+#define IS_NUMERIC(value) (IS_INT(value) || IS_DOUBLE(value))
+#define IS_NUMBER(value)  IS_NUMERIC(value)
 #define IS_BUILTIN(value) ((value).type == VAL_BUILTIN)
 #define IS_OBJ(value)     ((value).type == VAL_OBJ)
 
 #define AS_BOOL(value)    ((value).as.boolean)
-#define AS_NUMBER(value)  ((value).as.number)
+#define AS_INT(value)     ((value).as.integer)
+#define AS_DOUBLE(value)  ((value).as.number)
+// AS_NUMBER safely converts any numeric value to a double for mixed-type operations
+#define AS_NUMBER(value)  (IS_INT(value) ? (double)AS_INT(value) : AS_DOUBLE(value))
 #define AS_BUILTIN(value) ((value).as.builtin)
 #define AS_OBJ(value)     ((value).as.obj)
 
@@ -222,7 +230,8 @@ void print_value(Value value);
 ObjString* interpreter_intern_string(Interpreter* interp, const char* chars, size_t length);
 
 // Helpers to create values
-Value make_number(double value);
+Value make_int(int64_t value);
+Value make_double(double value);
 Value make_bool(bool value);
 Value make_nil(void);
 

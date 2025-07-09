@@ -42,6 +42,8 @@
 #include <math.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <inttypes.h>
+#include <errno.h>
 
 // Forward declare since they are mutually recursive
 ExecResult eval(Interpreter *interp, ASTNode *node);
@@ -214,7 +216,8 @@ static ObjString* make_heap_string(Interpreter* interp, const char* chars, size_
 }
 
 // --- Value Creation Helpers ---
-Value make_number(double value) { return (Value){VAL_NUMBER, .as.number = value}; }
+Value make_int(int64_t value) { return (Value){VAL_INT, .as.integer = value}; }
+Value make_double(double value) { return (Value){VAL_DOUBLE, .as.number = value}; }
 Value make_bool(bool value) { return (Value){VAL_BOOL, .as.boolean = value}; }
 Value make_nil(void) { return (Value){VAL_NIL}; }
 Value make_builtin(BuiltinFn fn) { return (Value){VAL_BUILTIN, .as.builtin = fn}; }
@@ -535,22 +538,30 @@ static bool env_assign(Interpreter* interp, ObjEnv* env, ObjString* name, Value 
 // --- VALUE HELPERS ---
 static int is_truthy(Value v) {
     switch (v.type) {
-        case VAL_NIL: return 0;
-        case VAL_BOOL: return v.as.boolean;
-        case VAL_NUMBER: return v.as.number != 0;
-        case VAL_OBJ: return 1; // All objects are truthy.
-        case VAL_BUILTIN: return 1;
+        case VAL_NIL:    return 0;
+        case VAL_BOOL:   return v.as.boolean;
+        case VAL_INT:    return v.as.integer != 0;
+        case VAL_DOUBLE: return v.as.number != 0;
+        case VAL_OBJ:    return 1; // All objects are truthy.
+        case VAL_BUILTIN:return 1;
     }
     return 0;
 }
 
 static bool values_are_equal(Value a, Value b) {
-    if (a.type != b.type) return false;
+    if (a.type != b.type) {
+        // Allow numeric types to be compared.
+        if (IS_NUMERIC(a) && IS_NUMERIC(b)) {
+            return AS_NUMBER(a) == AS_NUMBER(b);
+        }
+        return false;
+    }
 
     switch (a.type) {
         case VAL_BOOL:   return AS_BOOL(a) == AS_BOOL(b);
         case VAL_NIL:    return true;
-        case VAL_NUMBER: return AS_NUMBER(a) == AS_NUMBER(b);
+        case VAL_INT:    return AS_INT(a) == AS_INT(b);
+        case VAL_DOUBLE: return AS_DOUBLE(a) == AS_DOUBLE(b);
         case VAL_OBJ: {
             // For strings, compare content. For all other objects, compare pointers.
             if (OBJ_TYPE(a) == OBJ_STRING && OBJ_TYPE(b) == OBJ_STRING) {
@@ -594,14 +605,24 @@ static ObjString* value_to_string(Interpreter* interp, Value value) {
             memcpy(buffer, str, 4);
             break;
         }
-        case VAL_NUMBER: {
+        case VAL_INT: {
             // First, determine the required length
-            int needed = snprintf(NULL, 0, "%g", AS_NUMBER(value));
+            int needed = snprintf(NULL, 0, "%" PRId64, AS_INT(value));
             if (needed < 0) goto oom;
             length = needed;
             buffer = PRATT_MALLOC(length + 1);
             if (!buffer) goto oom;
-            snprintf(buffer, length + 1, "%g", AS_NUMBER(value));
+            snprintf(buffer, length + 1, "%" PRId64, AS_INT(value));
+            break;
+        }
+        case VAL_DOUBLE: {
+            // First, determine the required length
+            int needed = snprintf(NULL, 0, "%g", AS_DOUBLE(value));
+            if (needed < 0) goto oom;
+            length = needed;
+            buffer = PRATT_MALLOC(length + 1);
+            if (!buffer) goto oom;
+            snprintf(buffer, length + 1, "%g", AS_DOUBLE(value));
             break;
         }
         case VAL_BUILTIN: {
@@ -815,7 +836,12 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
     if (interp->had_error) return ERROR_RESULT();
     
     switch (node->type) {
-        case AST_NUMBER: return OK_RESULT(make_number(node->as.number.value));
+        case AST_NUMBER:
+            if (node->as.number.is_double) {
+                return OK_RESULT(make_double(node->as.number.as.d_val));
+            }
+            return OK_RESULT(make_int(node->as.number.as.i_val));
+
         case AST_STRING: {
             // Strings from source are interned.
             ObjString* str = interpreter_intern_string(interp, node->as.string.value, node->as.string.length);
@@ -886,15 +912,25 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
             Value index = index_res.value;
 
             if (IS_ARRAY(collection)) {
-                if (!IS_NUMBER(index)) {
+                ObjArray* array = AS_ARRAY(collection);
+                int64_t idx;
+
+                if (IS_INT(index)) {
+                    idx = AS_INT(index);
+                } else if (IS_DOUBLE(index)) {
+                    double d_idx = AS_DOUBLE(index);
+                    if (floor(d_idx) != d_idx) {
+                        runtime_error(interp, "Array index must be an integer."); return ERROR_RESULT();
+                    }
+                    idx = (int64_t)d_idx;
+                } else {
                     runtime_error(interp, "Array index must be a number."); return ERROR_RESULT();
                 }
-                ObjArray* array = AS_ARRAY(collection);
-                double idx_d = AS_NUMBER(index);
-                if (idx_d < 0 || idx_d >= array->count || floor(idx_d) != idx_d) {
+
+                if (idx < 0 || (size_t)idx >= array->count) {
                     runtime_error(interp, "Array index out of bounds."); return ERROR_RESULT();
                 }
-                return OK_RESULT(array->values[(int)idx_d]);
+                return OK_RESULT(array->values[(size_t)idx]);
             }
             if (IS_OBJECT(collection)) {
                 if (!IS_STRING(index)) {
@@ -914,12 +950,17 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
         case AST_UNARY: {
             ExecResult right_res = eval(interp, node->as.unary.child);
             if (right_res.status != EXEC_OK) return right_res;
-            
-            if (!IS_NUMBER(right_res.value)) {
-                runtime_error(interp, "Operand must be a number for unary '-'.");
-                return ERROR_RESULT();
+
+            Value right = right_res.value;
+            if (IS_INT(right)) {
+                return OK_RESULT(make_int(-AS_INT(right)));
             }
-            return OK_RESULT(make_number(-AS_NUMBER(right_res.value)));
+            if (IS_DOUBLE(right)) {
+                return OK_RESULT(make_double(-AS_DOUBLE(right)));
+            }
+            
+            runtime_error(interp, "Operand must be a number for unary '-'.");
+            return ERROR_RESULT();
         }
         case AST_BINARY: {
             if (node->as.binary.op.type == T_AMP_AMP) {
@@ -958,8 +999,16 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                 case T_BANG_EQUAL:  return OK_RESULT(make_bool(!values_are_equal(left, right)));
 
                 case T_PLUS:
-                    if (IS_NUMBER(left) && IS_NUMBER(right)) {
-                        return OK_RESULT(make_number(AS_NUMBER(left) + AS_NUMBER(right)));
+                    if (IS_INT(left) && IS_INT(right)) {
+                        int64_t a = AS_INT(left);
+                        int64_t b = AS_INT(right);
+                        if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) {
+                            return OK_RESULT(make_double((double)a + (double)b));
+                        }
+                        return OK_RESULT(make_int(a + b));
+                    }
+                    if (IS_NUMERIC(left) && IS_NUMERIC(right)) {
+                        return OK_RESULT(make_double(AS_NUMBER(left) + AS_NUMBER(right)));
                     }
                     if (IS_STRING(left) || IS_STRING(right)) {
                         ObjString* s1 = value_to_string(interp, left);
@@ -983,25 +1032,64 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                         PRATT_FREE(result_chars);
                         return OK_RESULT(make_obj((Obj*)result_str));
                     }
-                    runtime_error(interp, "Operands for '+' must be two numbers or at least one string.");
+                    runtime_error(interp, "Operands for '+' must be numbers or at least one string.");
                     return ERROR_RESULT();
 
-                case T_MINUS: case T_STAR: case T_SLASH:
-                case T_LESS: case T_LESS_EQUAL: case T_GREATER: case T_GREATER_EQUAL:
-                    if (!IS_NUMBER(left) || !IS_NUMBER(right)) {
-                        runtime_error(interp, "Operands must be numbers."); return ERROR_RESULT();
+                case T_MINUS:
+                    if (IS_INT(left) && IS_INT(right)) {
+                        int64_t a = AS_INT(left);
+                        int64_t b = AS_INT(right);
+                        if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b)) {
+                            return OK_RESULT(make_double((double)a - (double)b));
+                        }
+                        return OK_RESULT(make_int(a - b));
                     }
-                    double l = AS_NUMBER(left), r = AS_NUMBER(right);
+                    if (IS_NUMERIC(left) && IS_NUMERIC(right)) {
+                        return OK_RESULT(make_double(AS_NUMBER(left) - AS_NUMBER(right)));
+                    }
+                    runtime_error(interp, "Operands for '-' must be numbers.");
+                    return ERROR_RESULT();
+
+                case T_STAR:
+                    if (IS_INT(left) && IS_INT(right)) {
+                        int64_t a = AS_INT(left);
+                        int64_t b = AS_INT(right);
+                        // Check for overflow before multiplication
+                        if (a > 0) {
+                            if (b > 0) { if (a > INT64_MAX / b) goto mul_overflow; }
+                            else { if (b < INT64_MIN / a) goto mul_overflow; }
+                        } else if (a < 0) {
+                            if (b > 0) { if (a < INT64_MIN / b) goto mul_overflow; }
+                            else { if (a != 0 && b < INT64_MAX / a) goto mul_overflow; }
+                        }
+                        return OK_RESULT(make_int(a * b));
+                    mul_overflow:
+                        return OK_RESULT(make_double((double)a * (double)b));
+                    }
+                    if (IS_NUMERIC(left) && IS_NUMERIC(right)) {
+                        return OK_RESULT(make_double(AS_NUMBER(left) * AS_NUMBER(right)));
+                    }
+                    runtime_error(interp, "Operands for '*' must be numbers.");
+                    return ERROR_RESULT();
+                
+                case T_SLASH:
+                    if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
+                        runtime_error(interp, "Operands for '/' must be numbers."); return ERROR_RESULT();
+                    }
+                    double r_div = AS_NUMBER(right);
+                    if (r_div == 0) { runtime_error(interp, "Division by zero."); return ERROR_RESULT(); }
+                    return OK_RESULT(make_double(AS_NUMBER(left) / r_div));
+                
+                case T_LESS: case T_LESS_EQUAL: case T_GREATER: case T_GREATER_EQUAL:
+                    if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
+                        runtime_error(interp, "Operands must be numbers for comparison."); return ERROR_RESULT();
+                    }
+                    double l_cmp = AS_NUMBER(left), r_cmp = AS_NUMBER(right);
                     switch (node->as.binary.op.type) {
-                         case T_MINUS:         return OK_RESULT(make_number(l - r));
-                         case T_STAR:          return OK_RESULT(make_number(l * r));
-                         case T_SLASH:         
-                            if (r == 0) { runtime_error(interp, "Division by zero."); return ERROR_RESULT(); }
-                            return OK_RESULT(make_number(l / r));
-                         case T_LESS:          return OK_RESULT(make_bool(l < r));
-                         case T_LESS_EQUAL:    return OK_RESULT(make_bool(l <= r));
-                         case T_GREATER:       return OK_RESULT(make_bool(l > r));
-                         case T_GREATER_EQUAL: return OK_RESULT(make_bool(l >= r));
+                         case T_LESS:          return OK_RESULT(make_bool(l_cmp < r_cmp));
+                         case T_LESS_EQUAL:    return OK_RESULT(make_bool(l_cmp <= r_cmp));
+                         case T_GREATER:       return OK_RESULT(make_bool(l_cmp > r_cmp));
+                         case T_GREATER_EQUAL: return OK_RESULT(make_bool(l_cmp >= r_cmp));
                          default: break; // Unreachable
                     }
                 default: break;
@@ -1142,13 +1230,24 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
                 }
 
                 if (IS_ARRAY(col_res.value)) {
-                     if (!IS_NUMBER(idx_res.value)) { runtime_error(interp, "Array index must be a number."); return ERROR_RESULT(); }
                      ObjArray* arr = AS_ARRAY(col_res.value);
-                     double idx_d = AS_NUMBER(idx_res.value);
-                     if (idx_d < 0 || idx_d >= arr->count || floor(idx_d) != idx_d) {
+                     int64_t idx;
+                     if (IS_INT(idx_res.value)) {
+                         idx = AS_INT(idx_res.value);
+                     } else if (IS_DOUBLE(idx_res.value)) {
+                         double d_idx = AS_DOUBLE(idx_res.value);
+                         if (floor(d_idx) != d_idx) {
+                            runtime_error(interp, "Array index must be an integer for assignment."); return ERROR_RESULT();
+                         }
+                         idx = (int64_t)d_idx;
+                     } else {
+                         runtime_error(interp, "Array index must be a number for assignment."); return ERROR_RESULT();
+                     }
+
+                     if (idx < 0 || (size_t)idx >= arr->count) {
                          runtime_error(interp, "Array index out of bounds for assignment."); return ERROR_RESULT();
                      }
-                     arr->values[(int)idx_d] = value_res.value;
+                     arr->values[(size_t)idx] = value_res.value;
                 } else if (IS_OBJECT(col_res.value)) {
                      if (!IS_STRING(idx_res.value)) { runtime_error(interp, "Object key must be a string."); return ERROR_RESULT(); }
                      ObjString* key = AS_STRING(idx_res.value);
@@ -1251,36 +1350,43 @@ static Value builtin_toNumber(Interpreter *interp, size_t argc, Value *args) {
 
     Value val = args[0];
     switch (val.type) {
-        case VAL_NUMBER:
+        case VAL_INT:
+        case VAL_DOUBLE:
             return val; // Already a number
         case VAL_OBJ:
-            switch (OBJ_TYPE(val)) {
-                case OBJ_STRING: 
-                    ObjString* str = AS_STRING(val);
-                    if (str->length == 0) return make_number(0);
+            if (IS_STRING(val)) {
+                ObjString* str = AS_STRING(val);
+                if (str->length == 0) return make_int(0);
 
-                    char* end;
-                    double result = strtod(str->chars, &end);
-                    
-                    // Skip trailing whitespace before checking if the whole string was consumed.
-                    while (isspace((unsigned char)*end)) end++;
+                // Try to parse as an integer first.
+                char* end_i;
+                errno = 0;
+                long long i_val = strtoll(str->chars, &end_i, 10);
+                while (isspace((unsigned char)*end_i)) end_i++;
 
-                    if (*end != '\0') {
-                        return make_number(NAN); // Invalid number format, return NaN
-                    }
-                    return make_number(result);
-                default:
-                    // All other object types convert to NaN
-                    return make_number(NAN);
+                if (*end_i == '\0' && errno != ERANGE) {
+                    return make_int(i_val);
+                }
+
+                // If not a valid int, fall back to double.
+                char* end_d;
+                double d_val = strtod(str->chars, &end_d);
+                while (isspace((unsigned char)*end_d)) end_d++;
+
+                if (*end_d != '\0') {
+                    return make_double(NAN); // Invalid number format
+                }
+                return make_double(d_val);
             }
-            break;
+            // All other object types convert to NaN
+            return make_double(NAN);
         case VAL_BOOL:
-            return make_number(AS_BOOL(val) ? 1.0 : 0.0);
+            return make_int(AS_BOOL(val) ? 1 : 0);
         case VAL_NIL:
-            return make_number(0.0);
+            return make_int(0);
         default:
             // All other types convert to NaN
-            return make_number(NAN);
+            return make_double(NAN);
     }
 }
 
@@ -1341,7 +1447,8 @@ static void print_value_internal(Value value, PrintVisitor* visitor);
 // The internal recursive function that does the work.
 static void print_value_internal(Value value, PrintVisitor* visitor) {
     switch (value.type) {
-        case VAL_NUMBER: printf("%g", AS_NUMBER(value)); break;
+        case VAL_INT:    printf("%" PRId64, AS_INT(value)); break;
+        case VAL_DOUBLE: printf("%g", AS_DOUBLE(value)); break;
         case VAL_BOOL:   printf(AS_BOOL(value) ? "true" : "false"); break;
         case VAL_NIL:    printf("nil"); break;
         case VAL_BUILTIN: printf("<builtin>"); break;
@@ -1429,8 +1536,8 @@ static Value builtin_println(Interpreter *interp, size_t argc, Value *args) {
 }
 
 static Value builtin_sqrt(Interpreter *interp, size_t argc, Value *args) {
-    if (argc != 1 || !IS_NUMBER(args[0])) { runtime_error(interp, "sqrt() expects 1 number argument."); return make_nil(); }
-    return make_number(sqrt(AS_NUMBER(args[0])));
+    if (argc != 1 || !IS_NUMERIC(args[0])) { runtime_error(interp, "sqrt() expects 1 number argument."); return make_nil(); }
+    return make_double(sqrt(AS_NUMBER(args[0])));
 }
 
 static Value builtin_upper(Interpreter *interp, size_t argc, Value *args) {
@@ -1468,11 +1575,11 @@ static Value builtin_compare(Interpreter *interp, size_t argc, Value *args) {
 
     if (IS_STRING(a) && IS_STRING(b)) {
         int cmp = strcmp(AS_CSTRING(a), AS_CSTRING(b));
-        return make_number(cmp < 0 ? -1 : (cmp > 0 ? 1 : 0));
+        return make_int(cmp < 0 ? -1 : (cmp > 0 ? 1 : 0));
     }
-    if (IS_NUMBER(a) && IS_NUMBER(b)) {
+    if (IS_NUMERIC(a) && IS_NUMERIC(b)) {
         double diff = AS_NUMBER(a) - AS_NUMBER(b);
-        return make_number(diff < 0 ? -1 : (diff > 0 ? 1 : 0));
+        return make_int(diff < 0 ? -1 : (diff > 0 ? 1 : 0));
     }
     runtime_error(interp, "compare() can only compare numbers and strings.");
     return make_nil();
@@ -1483,9 +1590,9 @@ static Value builtin_len(Interpreter *interp, size_t argc, Value *args) {
     if (!IS_OBJ(args[0])) { runtime_error(interp, "len() argument must be a string, array, or object."); return make_nil(); }
     
     switch(OBJ_TYPE(args[0])) {
-        case OBJ_STRING: return make_number((double) AS_STRING(args[0])->length);
-        case OBJ_ARRAY:  return make_number((double) AS_ARRAY(args[0])->count);
-        case OBJ_OBJECT: return make_number((double) AS_OBJECT(args[0])->map.count);
+        case OBJ_STRING: return make_int((int64_t) AS_STRING(args[0])->length);
+        case OBJ_ARRAY:  return make_int((int64_t) AS_ARRAY(args[0])->count);
+        case OBJ_OBJECT: return make_int((int64_t) AS_OBJECT(args[0])->map.count);
         default: runtime_error(interp, "len() argument must be a string, array, or object."); return make_nil();
     }
 }
@@ -1538,7 +1645,7 @@ static Value builtin_gc_allocated(Interpreter *interp, size_t argc, Value *args)
         runtime_error(interp, "gc[\"allocated\"]() expects 0 arguments, but got %zu.", argc);
         return make_nil();
     }
-    return make_number((double)interp->bytes_allocated);
+    return make_int((int64_t)interp->bytes_allocated);
 }
 
 static Value builtin_gc_next_gc(Interpreter *interp, size_t argc, Value *args) {
@@ -1546,5 +1653,5 @@ static Value builtin_gc_next_gc(Interpreter *interp, size_t argc, Value *args) {
         runtime_error(interp, "gc[\"next_gc\"]() expects 0 arguments, but got %zu.", argc);
         return make_nil();
     }
-    return make_number((double)interp->next_gc);
+    return make_int((int64_t)interp->next_gc);
 }

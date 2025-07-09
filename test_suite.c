@@ -47,7 +47,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
-#include <stdlib.h>
+#include <inttypes.h>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -132,7 +132,11 @@ static void print_ast_indent(ASTNode *node, int depth) {
     
     switch (node->type) {
         case AST_NUMBER:
-            printf("NUMBER(%.2f)\n", node->as.number.value);
+            if (node->as.number.is_double) {
+                printf("NUMBER(double: %g)\n", node->as.number.as.d_val);
+            } else {
+                printf("NUMBER(int: %" PRId64 ")\n", node->as.number.as.i_val);
+            }
             break;
         case AST_STRING:
             printf("STRING(\"%.*s\")\n", (int)node->as.string.length, node->as.string.value);
@@ -320,11 +324,12 @@ static Statement *parse_program_test(const char *source, Parser* out_parser, Int
 
 /*── Basic functionality tests ───────────────────────────────────────────*/
 static void test_simple_number() {
-    TEST_START("Simple number parsing");
+    TEST_START("Simple integer parsing");
     ASTNode *ast = parse_expression_test("42");
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_NUMBER, "Expected number node");
-    ASSERT(ast->as.number.value == 42.0, "Expected value 42, got %.2f", ast->as.number.value);
+    ASSERT(!ast->as.number.is_double, "Expected integer, not double");
+    ASSERT(ast->as.number.as.i_val == 42, "Expected value 42, got %" PRId64, ast->as.number.as.i_val);
     TEST_PASS();
 }
 
@@ -343,8 +348,9 @@ static void test_decimal_number() {
     ASTNode *ast = parse_expression_test("3.14159");
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_NUMBER, "Expected number node");
-    ASSERT(ast->as.number.value > 3.14 && ast->as.number.value < 3.15, 
-           "Expected value ~3.14159, got %.5f", ast->as.number.value);
+    ASSERT(ast->as.number.is_double, "Expected double, not integer");
+    ASSERT(ast->as.number.as.d_val > 3.14 && ast->as.number.as.d_val < 3.15, 
+           "Expected value ~3.14159, got %.5f", ast->as.number.as.d_val);
     TEST_PASS();
 }
 
@@ -367,8 +373,8 @@ static void test_simple_addition() {
     ASSERT(ast->as.binary.op.type == T_PLUS, "Expected plus operator");
     ASSERT(ast->as.binary.left->type == AST_NUMBER, "Expected number on left");
     ASSERT(ast->as.binary.right->type == AST_NUMBER, "Expected number on right");
-    ASSERT(ast->as.binary.left->as.number.value == 2.0, "Expected left value 2");
-    ASSERT(ast->as.binary.right->as.number.value == 3.0, "Expected right value 3");
+    ASSERT(!ast->as.binary.left->as.number.is_double && ast->as.binary.left->as.number.as.i_val == 2, "Expected left value 2");
+    ASSERT(!ast->as.binary.right->as.number.is_double && ast->as.binary.right->as.number.as.i_val == 3, "Expected right value 3");
     TEST_PASS();
 }
 
@@ -409,7 +415,7 @@ static void test_precedence_multiplication_first() {
     
     // Left should be 2
     ASSERT(ast->as.binary.left->type == AST_NUMBER, "Expected number on left");
-    ASSERT(ast->as.binary.left->as.number.value == 2.0, "Expected left value 2");
+    ASSERT(!ast->as.binary.left->as.number.is_double && ast->as.binary.left->as.number.as.i_val == 2, "Expected left value 2");
     
     // Right should be (3 * 4)
     ASSERT(ast->as.binary.right->type == AST_BINARY, "Expected binary on right");
@@ -430,7 +436,7 @@ static void test_precedence_with_parentheses() {
     
     // Right should be 4
     ASSERT(ast->as.binary.right->type == AST_NUMBER, "Expected number on right");
-    ASSERT(ast->as.binary.right->as.number.value == 4.0, "Expected right value 4");
+    ASSERT(!ast->as.binary.right->as.number.is_double && ast->as.binary.right->as.number.as.i_val == 4, "Expected right value 4");
     TEST_PASS();
 }
 
@@ -475,7 +481,7 @@ static void test_unary_minus() {
     ASSERT(ast->type == AST_UNARY, "Expected unary node");
     ASSERT(ast->as.unary.op.type == T_MINUS, "Expected minus operator");
     ASSERT(ast->as.unary.child->type == AST_NUMBER, "Expected number child");
-    ASSERT(ast->as.unary.child->as.number.value == 5.0, "Expected child value 5");
+    ASSERT(!ast->as.unary.child->as.number.is_double && ast->as.unary.child->as.number.as.i_val == 5, "Expected child value 5");
     TEST_PASS();
 }
 
@@ -514,7 +520,7 @@ static void test_left_associativity_addition() {
     // Should be ((1 + 2) + 3), so left side is binary
     ASSERT(ast->as.binary.left->type == AST_BINARY, "Expected binary on left");
     ASSERT(ast->as.binary.right->type == AST_NUMBER, "Expected number on right");
-    ASSERT(ast->as.binary.right->as.number.value == 3.0, "Expected right value 3");
+    ASSERT(!ast->as.binary.right->as.number.is_double && ast->as.binary.right->as.number.as.i_val == 3, "Expected right value 3");
     TEST_PASS();
 }
 
@@ -602,7 +608,7 @@ static void test_zero() {
     ASTNode *ast = parse_expression_test("0");
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_NUMBER, "Expected number node");
-    ASSERT(ast->as.number.value == 0.0, "Expected value 0");
+    ASSERT(!ast->as.number.is_double && ast->as.number.as.i_val == 0, "Expected value 0");
     TEST_PASS();
 }
 
@@ -611,7 +617,7 @@ static void test_decimal_zero() {
     ASTNode *ast = parse_expression_test("0.0");
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_NUMBER, "Expected number node");
-    ASSERT(ast->as.number.value == 0.0, "Expected value 0.0");
+    ASSERT(ast->as.number.is_double && ast->as.number.as.d_val == 0.0, "Expected value 0.0");
     TEST_PASS();
 }
 
@@ -619,7 +625,7 @@ static void test_large_number() {
     TEST_START("Large number");
     ASTNode *ast = parse_expression_test("123456789.987654321");
     ASSERT(ast != NULL, "Expected AST node");
-    ASSERT(ast->type == AST_NUMBER, "Expected number node");
+    ASSERT(ast->type == AST_NUMBER && ast->as.number.is_double, "Expected double node");
     TEST_PASS();
 }
 
@@ -734,7 +740,7 @@ static void test_error_recovery() {
     
     ASTNode *ast2 = parse_expression(&p);
     ASSERT(ast2 != NULL, "Second expression should parse correctly after sync");
-    ASSERT(ast2->type == AST_NUMBER && ast2->as.number.value == 2.0, "AST should be number 2");
+    ASSERT(ast2->type == AST_NUMBER && !ast2->as.number.is_double && ast2->as.number.as.i_val == 2, "AST should be number 2");
     ASSERT(!p.had_error, "Second parse should succeed without error");
 
     parser_destroy(&p);
@@ -933,7 +939,7 @@ static void test_call_one_arg() {
     ASSERT(ast->as.call.argc == 1, "Expected 1 argument, got %zu", ast->as.call.argc);
     ASSERT(ast->as.call.args != NULL, "args pointer should not be NULL");
     ASSERT(ast->as.call.args[0]->type == AST_NUMBER, "Argument should be a number");
-    ASSERT(ast->as.call.args[0]->as.number.value == 123.0, "Argument value mismatch");
+    ASSERT(!ast->as.call.args[0]->as.number.is_double && ast->as.call.args[0]->as.number.as.i_val == 123, "Argument value mismatch");
     TEST_PASS();
 }
 
@@ -1375,7 +1381,7 @@ static void test_comparison_logic_primitives() {
         "println(true == true);"
         "println(false == false);"
         "println(true != false);"
-        "println(123 == 123.0);"
+        "println(123 == 123);"
         "println(123 != 456);"
         "println(\"hello\" == \"hello\");"
         "println(\"hello\" != \"world\");";
@@ -1445,9 +1451,9 @@ static void test_comparison_logic_strict_typing() {
 }
 
 static void test_relational_operators_on_composites() {
-    run_interpreter_error_test("Comparison: Relational operators on arrays", "[1] > 0;", "Operands must be numbers.");
-    run_interpreter_error_test("Comparison: Relational operators on objects", "({} < 1);", "Operands must be numbers.");
-    run_interpreter_error_test("Comparison: Relational operators on booleans", "true > false;", "Operands must be numbers.");
+    run_interpreter_error_test("Comparison: Relational operators on arrays", "[1] > 0;", "Operands must be numbers for comparison.");
+    run_interpreter_error_test("Comparison: Relational operators on objects", "({} < 1);", "Operands must be numbers for comparison.");
+    run_interpreter_error_test("Comparison: Relational operators on booleans", "true > false;", "Operands must be numbers for comparison.");
 }
 
 static void test_variable_shadowing() {
@@ -1828,6 +1834,32 @@ static void test_print_cycle_detection() {
     );
 }
 
+/*── Tests for the dual-numeric system ──────────────────────────────*/
+static void test_numeric_system() {
+    TEST_START("Numeric: Large integer parsing");
+    ASTNode* ast = parse_expression_test("9007199254740991"); // 2^53 - 1
+    ASSERT(ast && ast->type == AST_NUMBER, "Expected number node");
+    ASSERT(!ast->as.number.is_double, "Expected integer for large number");
+    ASSERT(ast->as.number.as.i_val == 9007199254740991LL, "Value mismatch for large integer");
+    TEST_PASS();
+
+    TEST_START("Numeric: Integer parse overflow to double");
+    ast = parse_expression_test("9223372036854775808"); // INT64_MAX + 1
+    ASSERT(ast && ast->type == AST_NUMBER, "Expected number node");
+    ASSERT(ast->as.number.is_double, "Expected double for integer overflow");
+    ASSERT(ast->as.number.as.d_val > 9.223372036854775e18, "Double value should be approximately INT64_MAX");
+    TEST_PASS();
+    
+    // Note: The exact double representation might vary slightly. `e+18` is standard.
+    run_interpreter_test("Numeric: Integer add overflow", "println(9223372036854775807 + 1);", "9.22337e+18\n");
+    run_interpreter_test("Numeric: Integer sub overflow", "println(-9223372036854775807 - 2);", "-9.22337e+18\n");
+    run_interpreter_test("Numeric: Integer mul overflow", "println(4611686018427387904 * 3);", "1.38351e+19\n");
+    run_interpreter_test("Numeric: Integer division produces double", "println(10 / 4);", "2.5\n");
+    run_interpreter_test("Numeric: Mixed-type arithmetic (int + double)", "println(10 + 2.5);", "12.5\n");
+    run_interpreter_test("Numeric: Mixed-type arithmetic (double + int)", "println(2.5 + 10);", "12.5\n");
+    run_interpreter_test("Numeric: Comparison of mixed types", "println(123 == 123.0); println(123.0 != 124);", "true\ntrue\n");
+    run_interpreter_test("Numeric: Builtin len() returns integer", "var a = len(\"hi\"); println(a == 2);", "true\n");
+}
 
 /*── Run all tests ───────────────────────────────────────────────────────*/
 static void run_all_tests() {
@@ -1959,6 +1991,10 @@ static void run_all_tests() {
     test_comparison_logic_objects();
     test_comparison_logic_strict_typing();
     test_relational_operators_on_composites();
+    
+    printf("\nNumeric System Tests\n");
+    printf("----------------------\n");
+    test_numeric_system();
 
     printf("\nGarbage Collector Tests\n");
     printf("-------------------------\n");

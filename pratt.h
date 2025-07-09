@@ -37,6 +37,8 @@
 #define PRATT_H
 
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 /*── Token definitions ────────────────────────────────────────────────────*/
 /**
@@ -75,7 +77,17 @@ typedef enum {
 
 typedef struct { ASTNode *left, *right; Token op;   } ASTBinary;
 typedef struct { ASTNode *child;       Token op;   } ASTUnary;
-typedef struct { double    value;      Token tok;  } ASTNumber;
+
+// Represents a number literal. Can be an int or a double.
+typedef struct {
+    bool is_double; // Flag to distinguish
+    union {
+        int64_t i_val;
+        double  d_val;
+    } as;
+    Token tok;
+} ASTNumber;
+
 typedef struct { char     *value; size_t length; Token tok; } ASTString;
 typedef struct { ASTNode *cond, *then_branch, *else_branch; } ASTTernary;
 // name is a canonical, interned string pointer.

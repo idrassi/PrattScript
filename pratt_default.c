@@ -111,7 +111,7 @@ static ASTNode *new_ternary_node(Parser *p, ASTNode *cond, ASTNode *then_b, ASTN
     return n;
 }
 
-/*── number: with strtod error checks ───────────────────────────────────*/
+/*── number: parse as int64_t or double, intelligently ──────────────────*/
 ASTNode *default_number_prefix(Parser *p) {
     Token t = p->cur;
     /* Micro-opt: use a stack buffer for most numeric literals */
@@ -122,25 +122,67 @@ ASTNode *default_number_prefix(Parser *p) {
         buf = stack_buf;
     } else {
         buf = arena_alloc(p->arena, t.length + 1);
-        if (!buf) return parser_error(p, "Out of memory"), NULL;
+        if (!buf) { parser_error(p, "Out of memory"); return NULL; }
     }
     memcpy(buf, t.start, t.length);
     buf[t.length] = '\0';
 
+    // Check if it looks like a double (contains '.', 'e', or 'E')
+    if (memchr(buf, '.', t.length) || memchr(buf, 'e', t.length) || memchr(buf, 'E', t.length)) {
+        errno = 0;
+        char *endptr;
+        double val = strtod(buf, &endptr);
+        if (endptr == buf || *endptr != '\0') {
+            parser_error(p, "Invalid floating-point number '%.*s'", (int)t.length, t.start);
+            return NULL;
+        }
+        if (errno == ERANGE) {
+            parser_error(p, "Floating-point number out of range '%.*s'", (int)t.length, t.start);
+            return NULL;
+        }
+
+        ASTNode *n = new_node(p, AST_NUMBER);
+        if (n) {
+            n->as.number.is_double = true;
+            n->as.number.as.d_val = val;
+            n->as.number.tok = t;
+        }
+        return n;
+    }
+
+    // Otherwise, try to parse as a 64-bit integer
     errno = 0;
     char *endptr;
-    double val = strtod(buf, &endptr);
-    if (endptr == buf)
-        return parser_error(p, "Invalid number '%.*s'",
-                            (int)t.length, t.start), NULL;
-    if (errno == ERANGE)
-        return parser_error(p, "Number out of range '%.*s'",
-                            (int)t.length, t.start), NULL;
+    long long val_ll = strtoll(buf, &endptr, 10);
 
+    // If it overflows, fall back to parsing as a double for max precision.
+    if (errno == ERANGE) {
+        errno = 0;
+        double val_d = strtod(buf, &endptr);
+        if (errno == ERANGE) {
+             parser_error(p, "Number out of range '%.*s'", (int)t.length, t.start);
+             return NULL;
+        }
+        ASTNode *n = new_node(p, AST_NUMBER);
+        if (n) {
+            n->as.number.is_double = true;
+            n->as.number.as.d_val = val_d;
+            n->as.number.tok = t;
+        }
+        return n;
+    }
+
+    if (endptr == buf || *endptr != '\0') {
+        parser_error(p, "Invalid integer '%.*s'", (int)t.length, t.start);
+        return NULL;
+    }
+
+    // Successfully parsed as an integer.
     ASTNode *n = new_node(p, AST_NUMBER);
     if (n) {
-        n->as.number.value = val;
-        n->as.number.tok   = t;
+        n->as.number.is_double = false;
+        n->as.number.as.i_val = val_ll;
+        n->as.number.tok = t;
     }
     return n;
 }
@@ -665,6 +707,9 @@ const char *default_token_name(TokenType t) {
         case T_WHILE:     return "'while'";
         case T_RETURN:    return "'return'";
         case T_FUNCTION:  return "'function'";
+        case T_TRUE:      return "'true'";
+        case T_FALSE:     return "'false'";
+        case T_NIL:       return "'nil'";
 
         case T_PLUS:      return "'+'";
         case T_MINUS:     return "'-'";
