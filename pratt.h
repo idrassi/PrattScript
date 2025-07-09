@@ -40,13 +40,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/*── Token definitions ────────────────────────────────────────────────────*/
+/*── PrattToken definitions ────────────────────────────────────────────────────*/
 /**
- * TokenType is an opaque integer ID. The library provides well-known
+ * PrattTokenType is an opaque integer ID. The library provides well-known
  * sentinel values. Host languages should define their own token enums
  * starting from T_USER_BASE to avoid collisions.
  */
-typedef int TokenType;
+typedef int PrattTokenType;
 
 enum {
     T_EOF   = 0,
@@ -57,15 +57,15 @@ enum {
 
 /*── A single lexed token ─────────────────────────────────────────────────*/
 typedef struct {
-    TokenType    type;
+    PrattTokenType    type;
     const char  *start;   /* pointer into source buffer */
     size_t       length;  /* lexeme length */
     int          line;    /* 1-based */
     int          col;     /* 1-based */
-} Token;
+} PrattToken;
 
 /*── Streaming lexer interface ─────────────────────────────────────────────*/
-typedef Token (*LexFn)(void *ctx);
+typedef PrattToken (*LexFn)(void *ctx);
 
 /*── Forward declaration of Statement struct ────────────────────────────*/
 typedef struct Statement Statement;
@@ -78,8 +78,8 @@ typedef enum {
     AST_BOOL, AST_NIL, /* Special AST nodes for literals */
 } ASTNodeType;
 
-typedef struct { ASTNode *left, *right; Token op;   } ASTBinary;
-typedef struct { ASTNode *child;       Token op;   } ASTUnary;
+typedef struct { ASTNode *left, *right; PrattToken op;   } ASTBinary;
+typedef struct { ASTNode *child;       PrattToken op;   } ASTUnary;
 
 // Represents a number literal. Can be an int or a double.
 typedef struct {
@@ -88,27 +88,27 @@ typedef struct {
         int64_t i_val;
         double  d_val;
     } as;
-    Token tok;
+    PrattToken tok;
 } ASTNumber;
 
-typedef struct { char     *value; size_t length; Token tok; } ASTString;
+typedef struct { char     *value; size_t length; PrattToken tok; } ASTString;
 typedef struct { ASTNode *cond, *then_branch, *else_branch; } ASTTernary;
 // name is a canonical, interned string pointer.
-typedef struct { const char *name;       Token tok;  } ASTIdent;
-typedef struct { ASTNode *callee; ASTNode **args; size_t argc; Token rparen; } ASTCall;
-typedef struct { ASTNode **elements; size_t count; Token bracket; } ASTArray;
-typedef struct { const char** keys; ASTNode** values; size_t count; Token brace; } ASTObject;
-typedef struct { ASTNode *object; ASTNode *index; Token bracket; } ASTIndex;
+typedef struct { const char *name;       PrattToken tok;  } ASTIdent;
+typedef struct { ASTNode *callee; ASTNode **args; size_t argc; PrattToken rparen; } ASTCall;
+typedef struct { ASTNode **elements; size_t count; PrattToken bracket; } ASTArray;
+typedef struct { const char** keys; ASTNode** values; size_t count; PrattToken brace; } ASTObject;
+typedef struct { ASTNode *object; ASTNode *index; PrattToken bracket; } ASTIndex;
 typedef struct {
     const char *name; // Optional, for named function expressions
     const char **params;
-    Token *param_toks;
+    PrattToken *param_toks;
     size_t param_count;
     Statement *body; // A ST_BLOCK
 } ASTFunction;
-typedef struct { ASTNode *target; ASTNode *value; Token op; } ASTAssign;
-typedef struct { int       value;      Token tok;  } ASTBool;
-typedef struct { Token     tok;                    } ASTNil;
+typedef struct { ASTNode *target; ASTNode *value; PrattToken op; } ASTAssign;
+typedef struct { int       value;      PrattToken tok;  } ASTBool;
+typedef struct { PrattToken     tok;                    } ASTNil;
 
 
 struct ASTNode {
@@ -141,11 +141,11 @@ struct Statement {
     StatementType type;
     union {
         // Use interned 'name' for performance. Keep token for errors.
-        struct { const char *name; Token name_tok; ASTNode *initializer; } var;
+        struct { const char *name; PrattToken name_tok; ASTNode *initializer; } var;
         struct { ASTNode *expr; } expr;
         struct { ASTNode *condition; Statement *then_branch, *else_branch; } if_s;
-        struct { Token keyword; } break_s;
-        struct { Token keyword; } continue_s;
+        struct { PrattToken keyword; } break_s;
+        struct { PrattToken keyword; } continue_s;
         struct { ASTNode *condition; Statement *body; } while_s;
         struct {
             Statement *initializer; /* A full statement (var decl or expr stmt) */
@@ -154,13 +154,13 @@ struct Statement {
             Statement *body;
         } for_s;
         struct { Statement **list; size_t count; } block;
-        struct { ASTNode *value; Token keyword; } ret;
+        struct { ASTNode *value; PrattToken keyword; } ret;
         // Function definition statement
         struct {
             const char *name;
-            Token name_tok;
+            PrattToken name_tok;
             const char **params; // Interned parameter names
-            Token *param_toks;   // Original tokens for param names
+            PrattToken *param_toks;   // Original tokens for param names
             size_t param_count;
             Statement *body;     // Should be a ST_BLOCK
         } func;
@@ -176,7 +176,7 @@ struct Statement {
 #define PREC_LOGICAL_AND 17  /* && */
 #define PREC_COMPARISON  18  /* == != < > <= >= */
 #define PREC_TERM        20  /* + - */
-#define PREC_FACTOR      30  /* * / */
+#define PREC_FACTOR      30  /* * / % */
 #define PREC_UNARY       40  /* - ! */
 #define PREC_POWER       50  /* ^ (right-associative, tighter than unary) */
 #define PREC_CALL        60  /* () . [] */
@@ -216,12 +216,12 @@ void     *arena_alloc(Arena *a, size_t sz);
 void      arena_free(Arena *a);
 
 /*── Host-provided function to get a string name for a token type ───────*/
-typedef const char *(*TokenNameFn)(TokenType t);
+typedef const char *(*TokenNameFn)(PrattTokenType t);
 
 /*── Richer error reporting struct ────────────────────────────────────────*/
 typedef struct {
     const char *message; /* Arena-allocated string */
-    Token       token;   /* Token that caused the error */
+    PrattToken       token;   /* PrattToken that caused the error */
 } PrattError;
 
 /*── Parser state ─────────────────────────────────────────────────────────*/
@@ -237,14 +237,14 @@ struct Parser {
     void              *lex_ctx;
     // Context pointer for host application (e.g., interpreter for string interning)
     void              *user_ctx;
-    Token              cur, next;
+    PrattToken              cur, next;
     const ParseRule   *rules;
     size_t             rule_count;
     TokenNameFn        token_name_fn;
     int                had_error;
     PrattError         last_error;
     int                recover_errors;
-    const TokenType   *sync_tokens;
+    const PrattTokenType   *sync_tokens;
     size_t             sync_count;
     int                recursion_depth;
     int                max_recursion_depth;
@@ -307,7 +307,7 @@ Statement *parse_block(Parser *p);
  *    the arena's lifetime.
  */
 ASTNode  *parse_expression_until(Parser           *p,
-                                 const TokenType  *terminators,
+                                 const PrattTokenType  *terminators,
                                  size_t            term_count);
 
 /**
@@ -327,21 +327,21 @@ void      parser_destroy(Parser *p);
  * (e.g. semicolon, EOF). Only useful if p->recover_errors == 1.
  */
 void      parser_sync(Parser *p,
-                      const TokenType *sync_tokens,
+                      const PrattTokenType *sync_tokens,
                       size_t sync_count);
 
 /*── Configure which tokens to sync on when recover_errors==1 */
 void parser_set_sync_tokens(Parser *p,
-                            const TokenType *sync_tokens,
+                            const PrattTokenType *sync_tokens,
                                  size_t sync_count);
 
 void      parser_set_max_recursion(Parser *p, int depth);
 
 /*── Helpers ──────────────────────────────────────────────────────────────*/
 void        parser_error(Parser *p, const char *fmt, ...);
-Token       peek(Parser *p);
-Token       advance(Parser *p);
-int         check(Parser *p, TokenType t);
-int         consume(Parser *p, TokenType t, const char *expect_desc);
+PrattToken       peek(Parser *p);
+PrattToken       advance(Parser *p);
+int         check(Parser *p, PrattTokenType t);
+int         consume(Parser *p, PrattTokenType t, const char *expect_desc);
 
 #endif /* PRATT_H */

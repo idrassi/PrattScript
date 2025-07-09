@@ -115,7 +115,7 @@ void arena_free(Arena *a) {
 }
 
 /* Decide whether token `look` can extend the expression currently in `left` */
-static int is_valid_continuation(Parser *p, Token look, int min_bp) {
+static int is_valid_continuation(Parser *p, PrattToken look, int min_bp) {
     /* Guard against negative and out-of-bounds token IDs */
     if (look.type < 0 || (size_t)look.type >= p->rule_count) return 0;
     const ParseRule *rule = &p->rules[look.type];
@@ -213,7 +213,7 @@ void parser_error(Parser *p, const char *fmt, ...) {
 
 /*── Error-Recovery Synchronization ───────────────────────────────────────*/
 void parser_sync(Parser *p,
-                 const TokenType *sync_tokens,
+                 const PrattTokenType *sync_tokens,
                  size_t sync_count)
 {
     /* If the token that *caused* the error is already a sync point,
@@ -234,28 +234,28 @@ void parser_sync(Parser *p,
 }
 
 void parser_set_sync_tokens(Parser *p,
-                            const TokenType *sync_tokens,
+                            const PrattTokenType *sync_tokens,
                             size_t sync_count)
 {
     p->sync_tokens = sync_tokens;
     p->sync_count  = sync_count;
 }
 
-/*── Lexer/Token helpers ─────────────────────────────────────────────────*/
+/*── Lexer/PrattToken helpers ─────────────────────────────────────────────────*/
 
 void parser_set_max_recursion(Parser *p, int depth) {
     p->max_recursion_depth = (depth > 0) ? depth : 1000;
 }
 
-Token peek(Parser *p) { return p->next; }
-Token advance(Parser *p) {
+PrattToken peek(Parser *p) { return p->next; }
+PrattToken advance(Parser *p) {
     p->cur  = p->next;
     p->next = p->lex(p->lex_ctx);
     return p->cur;
 }
-int check(Parser *p, TokenType t) { return p->next.type == t; }
+int check(Parser *p, PrattTokenType t) { return p->next.type == t; }
 
-int consume(Parser *p, TokenType t, const char *desc) {
+int consume(Parser *p, PrattTokenType t, const char *desc) {
     if (check(p, t)) { advance(p); return 1; }
     parser_error(p, "Expected %s but got %s", desc, p->token_name_fn(p->next.type));
     return 0;
@@ -271,11 +271,11 @@ ASTNode *parse_precedence(Parser *p, int min_bp) {
     }
 
     advance(p);
-    Token prefix_tok = p->cur;
+    PrattToken prefix_tok = p->cur;
     /* Guard against negative and out-of-bounds token IDs */
     if (prefix_tok.type < 0 || (size_t)prefix_tok.type >= p->rule_count) {
         parser_error(p,
-                     "Token ID %d has no rule defined (invalid token id)",
+                     "PrattToken ID %d has no rule defined (invalid token id)",
                      prefix_tok.type);
         p->recursion_depth--;
         return NULL;
@@ -305,7 +305,7 @@ ASTNode *parse_precedence(Parser *p, int min_bp) {
 }
 
 ASTNode *parse_expression_until(Parser           *p,
-                                const TokenType  *terminators,
+                                const PrattTokenType  *terminators,
                                 size_t            term_count)
 {
     ASTNode *expr = parse_precedence(p, PREC_NONE);
@@ -329,6 +329,6 @@ ASTNode *parse_expression_until(Parser           *p,
 }
 
 ASTNode *parse_expression(Parser *p) {
-    static const TokenType eof = T_EOF;
+    static const PrattTokenType eof = T_EOF;
     return parse_expression_until(p, &eof, 1);
 }

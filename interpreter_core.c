@@ -33,6 +33,10 @@
  *  THE SOFTWARE.
  */
 
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>
+#endif
 #include "interpreter_core.h"
 #include "pratt_config.h"
 #include "pratt.h"
@@ -746,6 +750,34 @@ static Value builtin_string_trim(Interpreter*, size_t, Value*);
 static Value builtin_array_slice(Interpreter*, size_t, Value*);
 static Value builtin_array_join(Interpreter*, size_t, Value*);
 
+// Core, global helpers
+static Value builtin_range(Interpreter*, size_t, Value*);
+static Value builtin_min(Interpreter*, size_t, Value*);
+static Value builtin_max(Interpreter*, size_t, Value*);
+static Value builtin_round(Interpreter*, size_t, Value*);
+static Value builtin_sleep(Interpreter*, size_t, Value*);
+
+// String object extensions
+static Value builtin_string_replace(Interpreter*, size_t, Value*);
+static Value builtin_string_startsWith(Interpreter*, size_t, Value*);
+static Value builtin_string_endsWith(Interpreter*, size_t, Value*);
+static Value builtin_string_indexOf(Interpreter*, size_t, Value*);
+static Value builtin_string_substring(Interpreter*, size_t, Value*);
+static Value builtin_string_repeat(Interpreter*, size_t, Value*);
+static Value builtin_string_padStart(Interpreter*, size_t, Value*);
+static Value builtin_string_padEnd(Interpreter*, size_t, Value*);
+
+// Array object extensions
+static Value builtin_array_map(Interpreter*, size_t, Value*);
+static Value builtin_array_filter(Interpreter*, size_t, Value*);
+static Value builtin_array_reduce(Interpreter*, size_t, Value*);
+static Value builtin_array_indexOf(Interpreter*, size_t, Value*);
+static Value builtin_array_includes(Interpreter*, size_t, Value*);
+static Value builtin_array_sort(Interpreter*, size_t, Value*);
+static Value builtin_array_reverse(Interpreter*, size_t, Value*);
+static Value builtin_array_shuffle(Interpreter*, size_t, Value*);
+
+
 static BuiltinDef builtins[] = {
     {"print",   builtin_print},
     {"println", builtin_println},
@@ -763,6 +795,11 @@ static BuiltinDef builtins[] = {
     {"time",    builtin_time},
     {"exit",    builtin_exit},
     {"assert",  builtin_assert},
+    {"range",   builtin_range},
+    {"min",     builtin_min},
+    {"max",     builtin_max},
+    {"round",   builtin_round},
+    {"sleep",   builtin_sleep},
     {NULL, NULL}
 };
 
@@ -844,6 +881,14 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     push_root(interp, (Obj*)string_object);
     map_set(interp, &string_object->map, interpreter_intern_string(interp, "split", 5), make_builtin(builtin_string_split));
     map_set(interp, &string_object->map, interpreter_intern_string(interp, "trim", 4), make_builtin(builtin_string_trim));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "replace", 7), make_builtin(builtin_string_replace));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "startsWith", 10), make_builtin(builtin_string_startsWith));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "endsWith", 8), make_builtin(builtin_string_endsWith));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "indexOf", 7), make_builtin(builtin_string_indexOf));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "substring", 9), make_builtin(builtin_string_substring));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "repeat", 6), make_builtin(builtin_string_repeat));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "padStart", 8), make_builtin(builtin_string_padStart));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "padEnd", 6), make_builtin(builtin_string_padEnd));
     env_define(interp, interp->env, interpreter_intern_string(interp, "string", 6), make_obj((Obj*)string_object));
     pop_root(interp);
 
@@ -852,6 +897,14 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     push_root(interp, (Obj*)array_object);
     map_set(interp, &array_object->map, interpreter_intern_string(interp, "slice", 5), make_builtin(builtin_array_slice));
     map_set(interp, &array_object->map, interpreter_intern_string(interp, "join", 4), make_builtin(builtin_array_join));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "map", 3), make_builtin(builtin_array_map));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "filter", 6), make_builtin(builtin_array_filter));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "reduce", 6), make_builtin(builtin_array_reduce));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "indexOf", 7), make_builtin(builtin_array_indexOf));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "includes", 8), make_builtin(builtin_array_includes));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "sort", 4), make_builtin(builtin_array_sort));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "reverse", 7), make_builtin(builtin_array_reverse));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "shuffle", 7), make_builtin(builtin_array_shuffle));
     env_define(interp, interp->env, interpreter_intern_string(interp, "array", 5), make_obj((Obj*)array_object));
     pop_root(interp);
     
@@ -1224,6 +1277,27 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                     double r_div = AS_NUMBER(right);
                     if (r_div == 0) { runtime_error(interp, "Division by zero."); return ERROR_RESULT(); }
                     return OK_RESULT(make_double(AS_NUMBER(left) / r_div));
+
+                case T_PERCENT:
+                    if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
+                        runtime_error(interp, "Operands for '%%' must be numbers.");
+                        return ERROR_RESULT();
+                    }
+
+                    // If both are integers, perform integer modulo.
+                    if (IS_INT(left) && IS_INT(right)) {
+                        int64_t r_int = AS_INT(right);
+                        if (r_int == 0) {
+                            runtime_error(interp, "Modulo by zero.");
+                            return ERROR_RESULT();
+                        }
+                        return OK_RESULT(make_int(AS_INT(left) % r_int));
+                    }
+
+                    // Otherwise, perform floating point remainder using fmod().
+                    double r_mod = AS_NUMBER(right);
+                    if (r_mod == 0.0) { runtime_error(interp, "Modulo by zero."); return ERROR_RESULT(); }
+                    return OK_RESULT(make_double(fmod(AS_NUMBER(left), r_mod)));
                 
                 case T_LESS: case T_LESS_EQUAL: case T_GREATER: case T_GREATER_EQUAL:
                     if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
@@ -1888,6 +1962,663 @@ static Value builtin_assert(Interpreter *interp, size_t argc, Value* args) {
         return make_nil();
     }
     return make_nil();
+}
+
+// --- Core Implementations ---
+
+static Value builtin_range(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 2 || argc > 3) {
+        runtime_error(interp, "range() expects 2 or 3 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    if (!IS_INT(args[0]) || !IS_INT(args[1])) {
+        runtime_error(interp, "range() start and end arguments must be integers.");
+        return make_nil();
+    }
+
+    int64_t start = AS_INT(args[0]);
+    int64_t end = AS_INT(args[1]);
+    int64_t step = 1;
+
+    if (argc == 3) {
+        if (!IS_INT(args[2])) {
+            runtime_error(interp, "range() step argument must be an integer.");
+            return make_nil();
+        }
+        step = AS_INT(args[2]);
+    }
+
+    if (step == 0) {
+        runtime_error(interp, "range() step argument cannot be zero.");
+        return make_nil();
+    }
+
+    ObjArray* array = new_array(interp);
+    push_root(interp, (Obj*)array);
+
+    if (step > 0) {
+        for (int64_t i = start; i < end; i += step) {
+            array_write(interp, array, make_int(i));
+        }
+    } else {
+        for (int64_t i = start; i > end; i += step) {
+            array_write(interp, array, make_int(i));
+        }
+    }
+
+    pop_root(interp);
+    return make_obj((Obj*)array);
+}
+
+static Value min_max_helper(Interpreter* interp, size_t argc, Value* args, bool is_max) {
+    if (argc == 0) {
+        runtime_error(interp, "%s() requires at least one argument.", is_max ? "max" : "min");
+        return make_nil();
+    }
+
+    Value result_val = args[0];
+    if (!IS_NUMERIC(result_val)) {
+        runtime_error(interp, "%s() arguments must be numbers.", is_max ? "max" : "min");
+        return make_nil();
+    }
+
+    for (size_t i = 1; i < argc; i++) {
+        if (!IS_NUMERIC(args[i])) {
+            runtime_error(interp, "%s() arguments must be numbers.", is_max ? "max" : "min");
+            return make_nil();
+        }
+        double current_best = AS_NUMBER(result_val);
+        double candidate = AS_NUMBER(args[i]);
+        bool found_better = is_max ? (candidate > current_best) : (candidate < current_best);
+        if (found_better) {
+            result_val = args[i];
+        }
+    }
+    return result_val;
+}
+
+static Value builtin_min(Interpreter* interp, size_t argc, Value* args) {
+    return min_max_helper(interp, argc, args, false);
+}
+
+static Value builtin_max(Interpreter* interp, size_t argc, Value* args) {
+    return min_max_helper(interp, argc, args, true);
+}
+
+static Value builtin_round(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2) {
+        runtime_error(interp, "round() expects 1 or 2 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    if (!IS_NUMERIC(args[0])) {
+        runtime_error(interp, "round() first argument must be a number.");
+        return make_nil();
+    }
+    
+    double num = AS_NUMBER(args[0]);
+    int64_t digits = 0;
+    if (argc == 2) {
+        if (!IS_INT(args[1])) {
+            runtime_error(interp, "round() second argument (digits) must be an integer.");
+            return make_nil();
+        }
+        digits = AS_INT(args[1]);
+    }
+    
+    if (digits == 0) {
+        return make_double(round(num));
+    }
+    
+    double factor = pow(10.0, (double) digits);
+    return make_double(round(num * factor) / factor);
+}
+
+static Value builtin_sleep(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1) {
+        runtime_error(interp, "sleep() expects 1 argument (milliseconds), but got %zu.", argc);
+        return make_nil();
+    }
+    if (!IS_INT(args[0])) {
+        runtime_error(interp, "sleep() argument must be an integer.");
+        return make_nil();
+    }
+    int64_t ms = AS_INT(args[0]);
+    if (ms < 0) {
+        runtime_error(interp, "sleep() argument cannot be negative.");
+        return make_nil();
+    }
+
+#ifdef _WIN32
+    // Windows-specific sleep implementation
+    Sleep((DWORD)ms);
+#else
+    // POSIX-compliant sleep implementation
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000;
+    
+    nanosleep(&ts, NULL);
+#endif
+    
+    return make_nil();
+}
+
+// --- String Object Implementations ---
+
+static Value builtin_string_replace(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 3 || argc > 4 || !IS_STRING(args[0]) || !IS_STRING(args[1]) || !IS_STRING(args[2])) {
+        runtime_error(interp, "string.replace(s, old, new, [count]) requires string arguments.");
+        return make_nil();
+    }
+    
+    ObjString* s = AS_STRING(args[0]);
+    ObjString* old = AS_STRING(args[1]);
+    ObjString* new = AS_STRING(args[2]);
+    long long count = -1;
+    if (argc == 4) {
+        if (!IS_INT(args[3])) {
+            runtime_error(interp, "string.replace() count must be an integer.");
+            return make_nil();
+        }
+        count = AS_INT(args[3]);
+    }
+
+    if (old->length == 0) { // Can't replace empty string
+        return args[0];
+    }
+
+    // Pass 1: Count occurrences and calculate final length
+    size_t result_len = s->length;
+    long long replacements = 0;
+    const char* p = s->chars;
+    while ((p = strstr(p, old->chars)) != NULL) {
+        if (count != -1 && replacements >= count) break;
+        result_len += new->length - old->length;
+        replacements++;
+        p += old->length;
+    }
+
+    if (replacements == 0) {
+        return args[0]; // No replacements needed, return original string
+    }
+
+    // Pass 2: Allocate and build the new string
+    char* result_chars = PRATT_MALLOC(result_len + 1);
+    if (!result_chars) {
+        runtime_error(interp, "Out of memory for string replacement.");
+        return make_nil();
+    }
+    
+    char* dest = result_chars;
+    const char* start = s->chars;
+    p = s->chars;
+    replacements = 0;
+    while ((p = strstr(start, old->chars)) != NULL) {
+        if (count != -1 && replacements >= count) break;
+        
+        size_t segment_len = p - start;
+        memcpy(dest, start, segment_len);
+        dest += segment_len;
+
+        memcpy(dest, new->chars, new->length);
+        dest += new->length;
+        
+        start = p + old->length;
+        replacements++;
+    }
+    strcpy(dest, start); // Copy the rest of the string
+    
+    ObjString* result_str = make_heap_string(interp, result_chars, result_len);
+    PRATT_FREE(result_chars);
+    return make_obj((Obj*)result_str);
+}
+
+static Value builtin_string_startsWith(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "string.startsWith(s, prefix) requires two string arguments.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    ObjString* prefix = AS_STRING(args[1]);
+    if (s->length < prefix->length) {
+        return make_bool(false);
+    }
+    return make_bool(strncmp(s->chars, prefix->chars, prefix->length) == 0);
+}
+
+static Value builtin_string_endsWith(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "string.endsWith(s, suffix) requires two string arguments.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    ObjString* suffix = AS_STRING(args[1]);
+    if (s->length < suffix->length) {
+        return make_bool(false);
+    }
+    const char* end_of_s = s->chars + s->length - suffix->length;
+    return make_bool(memcmp(end_of_s, suffix->chars, suffix->length) == 0);
+}
+
+static Value builtin_string_indexOf(Interpreter* interp, size_t argc, Value* args) {
+    if ((argc < 2 || argc > 3) || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "string.indexOf(s, needle, [from]) requires string arguments.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    ObjString* needle = AS_STRING(args[1]);
+    int64_t from = 0;
+    if (argc == 3) {
+        if (!IS_INT(args[2])) {
+            runtime_error(interp, "string.indexOf() from index must be an integer.");
+            return make_nil();
+        }
+        from = AS_INT(args[2]);
+    }
+    
+    if (from < 0) from = 0;
+    if ((size_t)from >= s->length) return make_int(-1);
+
+    const char* found = strstr(s->chars + from, needle->chars);
+    if (found == NULL) {
+        return make_int(-1);
+    }
+    return make_int(found - s->chars);
+}
+
+static Value builtin_string_substring(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 3 || !IS_STRING(args[0]) || !IS_INT(args[1]) || !IS_INT(args[2])) {
+        runtime_error(interp, "string.substring(s, start, end) requires a string and two integers.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    int64_t start = AS_INT(args[1]);
+    int64_t end = AS_INT(args[2]);
+
+    // Clamp to bounds
+    if (start < 0) start = 0;
+    if (end > (int64_t)s->length) end = s->length;
+    if (start > (int64_t)s->length) start = s->length;
+    if (end < start) end = start;
+
+    size_t new_len = end - start;
+    return make_obj((Obj*)make_heap_string(interp, s->chars + start, new_len));
+}
+
+static Value builtin_string_repeat(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_INT(args[1])) {
+        runtime_error(interp, "string.repeat(s, n) requires a string and an integer.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    int64_t n = AS_INT(args[1]);
+    if (n < 0) {
+        runtime_error(interp, "string.repeat() count cannot be negative.");
+        return make_nil();
+    }
+    if (n == 0 || s->length == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+    
+    size_t new_len = s->length * n;
+    // Basic overflow check
+    if (n > 0 && new_len / n != s->length) {
+        runtime_error(interp, "string.repeat() result is too large.");
+        return make_nil();
+    }
+
+    char* result_chars = PRATT_MALLOC(new_len + 1);
+    if (!result_chars) {
+        runtime_error(interp, "Out of memory for string repeat.");
+        return make_nil();
+    }
+    
+    char* p = result_chars;
+    for (int64_t i = 0; i < n; i++) {
+        memcpy(p, s->chars, s->length);
+        p += s->length;
+    }
+    *p = '\0';
+    
+    ObjString* result_str = make_heap_string(interp, result_chars, new_len);
+    PRATT_FREE(result_chars);
+    return make_obj((Obj*)result_str);
+}
+
+static Value pad_helper(Interpreter* interp, size_t argc, Value* args, bool is_start) {
+    if ((argc < 2 || argc > 3) || !IS_STRING(args[0]) || !IS_INT(args[1])) {
+        runtime_error(interp, "pad function requires a string and an integer length.");
+        return make_nil();
+    }
+    ObjString* s = AS_STRING(args[0]);
+    int64_t target_len = AS_INT(args[1]);
+    
+    if ((int64_t)s->length >= target_len) {
+        return args[0];
+    }
+
+    ObjString* pad_str;
+    if (argc == 3) {
+        if (!IS_STRING(args[2])) {
+            runtime_error(interp, "pad function pad string must be a string.");
+            return make_nil();
+        }
+        pad_str = AS_STRING(args[2]);
+        if (pad_str->length == 0) return args[0]; // Can't pad with empty string
+    } else {
+        pad_str = make_heap_string(interp, " ", 1); // Default is space
+        push_root(interp, (Obj*)pad_str); // Protect default pad string
+    }
+
+    size_t pad_needed = target_len - s->length;
+    char* result_chars = PRATT_MALLOC(target_len + 1);
+    if (!result_chars) {
+        if (argc < 3) pop_root(interp);
+        runtime_error(interp, "Out of memory for string padding.");
+        return make_nil();
+    }
+
+    char* p = result_chars;
+    if (is_start) {
+        for (size_t i = 0; i < pad_needed; i++) {
+            *p++ = pad_str->chars[i % pad_str->length];
+        }
+        memcpy(p, s->chars, s->length);
+    } else {
+        memcpy(p, s->chars, s->length);
+        p += s->length;
+        for (size_t i = 0; i < pad_needed; i++) {
+            *p++ = pad_str->chars[i % pad_str->length];
+        }
+    }
+    result_chars[target_len] = '\0';
+
+    if (argc < 3) pop_root(interp); // Pop default pad string if it was created
+    ObjString* result_str = make_heap_string(interp, result_chars, target_len);
+    PRATT_FREE(result_chars);
+    return make_obj((Obj*)result_str);
+}
+
+static Value builtin_string_padStart(Interpreter* interp, size_t argc, Value* args) {
+    return pad_helper(interp, argc, args, true);
+}
+
+static Value builtin_string_padEnd(Interpreter* interp, size_t argc, Value* args) {
+    return pad_helper(interp, argc, args, false);
+}
+
+
+// --- Array Object Implementations ---
+
+static Value builtin_array_map(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_ARRAY(args[0]) || (!IS_FUNCTION(args[1]) && !IS_BUILTIN(args[1]))) {
+        runtime_error(interp, "array.map(arr, fn) requires an array and a function.");
+        return make_nil();
+    }
+    ObjArray* src = AS_ARRAY(args[0]);
+    Value fn = args[1];
+    
+    ObjArray* result_array = new_array(interp);
+    push_root(interp, (Obj*)result_array); // Protect result
+    if (IS_OBJ(fn)) push_root(interp, AS_OBJ(fn)); // Protect callback
+
+    for (int i = 0; i < src->count; i++) {
+        Value elem = src->values[i];
+        if (IS_OBJ(elem)) push_root(interp, AS_OBJ(elem)); // Protect element
+        
+        ExecResult map_res = call_value(interp, fn, 1, &elem);
+        
+        if (IS_OBJ(elem)) pop_root(interp); // Un-root element
+
+        if (map_res.status != EXEC_OK || interp->had_error) {
+            if (IS_OBJ(fn)) pop_root(interp);
+            pop_root(interp);
+            return make_nil(); // Error already set
+        }
+        array_write(interp, result_array, map_res.value);
+    }
+
+    if (IS_OBJ(fn)) pop_root(interp);
+    pop_root(interp);
+    return make_obj((Obj*)result_array);
+}
+
+static Value builtin_array_filter(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_ARRAY(args[0]) || (!IS_FUNCTION(args[1]) && !IS_BUILTIN(args[1]))) {
+        runtime_error(interp, "array.filter(arr, fn) requires an array and a function.");
+        return make_nil();
+    }
+    ObjArray* src = AS_ARRAY(args[0]);
+    Value fn = args[1];
+    
+    ObjArray* result_array = new_array(interp);
+    push_root(interp, (Obj*)result_array); // Protect result
+    if (IS_OBJ(fn)) push_root(interp, AS_OBJ(fn)); // Protect callback
+
+    for (int i = 0; i < src->count; i++) {
+        Value elem = src->values[i];
+        if (IS_OBJ(elem)) push_root(interp, AS_OBJ(elem)); // Protect element
+        
+        ExecResult filter_res = call_value(interp, fn, 1, &elem);
+        
+        if (IS_OBJ(elem)) pop_root(interp); // Un-root element
+
+        if (filter_res.status != EXEC_OK || interp->had_error) {
+            if (IS_OBJ(fn)) pop_root(interp);
+            pop_root(interp);
+            return make_nil(); // Error already set
+        }
+        if (is_truthy(filter_res.value)) {
+            array_write(interp, result_array, elem);
+        }
+    }
+
+    if (IS_OBJ(fn)) pop_root(interp);
+    pop_root(interp);
+    return make_obj((Obj*)result_array);
+}
+
+static Value builtin_array_reduce(Interpreter* interp, size_t argc, Value* args) {
+    if ((argc < 2 || argc > 3) || !IS_ARRAY(args[0]) || (!IS_FUNCTION(args[1]) && !IS_BUILTIN(args[1]))) {
+        runtime_error(interp, "array.reduce(arr, fn, [init]) requires an array and a function.");
+        return make_nil();
+    }
+    ObjArray* src = AS_ARRAY(args[0]);
+    Value fn = args[1];
+    
+    Value accumulator;
+    int start_index = 0;
+    
+    if (argc == 3) {
+        accumulator = args[2];
+    } else {
+        if (src->count == 0) {
+            runtime_error(interp, "reduce of empty array with no initial value.");
+            return make_nil();
+        }
+        accumulator = src->values[0];
+        start_index = 1;
+    }
+
+    if (IS_OBJ(fn)) push_root(interp, AS_OBJ(fn)); // Protect callback
+
+    for (int i = start_index; i < src->count; i++) {
+        Value current_val = src->values[i];
+        Value call_args[2] = { accumulator, current_val };
+        
+        if (IS_OBJ(accumulator)) push_root(interp, AS_OBJ(accumulator));
+        if (IS_OBJ(current_val)) push_root(interp, AS_OBJ(current_val));
+        
+        ExecResult reduce_res = call_value(interp, fn, 2, call_args);
+
+        if (IS_OBJ(current_val)) pop_root(interp);
+        if (IS_OBJ(accumulator)) pop_root(interp);
+        
+        if (reduce_res.status != EXEC_OK || interp->had_error) {
+            if (IS_OBJ(fn)) pop_root(interp);
+            return make_nil();
+        }
+        accumulator = reduce_res.value;
+    }
+    
+    if (IS_OBJ(fn)) pop_root(interp);
+    return accumulator;
+}
+
+static Value builtin_array_indexOf(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_ARRAY(args[0])) {
+        runtime_error(interp, "array.indexOf(arr, value) requires an array and a value.");
+        return make_nil();
+    }
+    ObjArray* arr = AS_ARRAY(args[0]);
+    Value needle = args[1];
+    for (int i = 0; i < arr->count; i++) {
+        if (values_are_equal(arr->values[i], needle)) {
+            return make_int(i);
+        }
+    }
+    return make_int(-1);
+}
+
+static Value builtin_array_includes(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_ARRAY(args[0])) {
+        runtime_error(interp, "array.includes(arr, value) requires an array and a value.");
+        return make_nil();
+    }
+    ObjArray* arr = AS_ARRAY(args[0]);
+    Value needle = args[1];
+    for (int i = 0; i < arr->count; i++) {
+        if (values_are_equal(arr->values[i], needle)) {
+            return make_bool(true);
+        }
+    }
+    return make_bool(false);
+}
+
+// Context for qsort comparator
+static struct {
+    Interpreter* interp;
+    Value callback_fn;
+} sort_context;
+
+static int sort_compare_wrapper(const void* a, const void* b) {
+    Interpreter* interp = sort_context.interp;
+    Value val_a = *(const Value*)a;
+    Value val_b = *(const Value*)b;
+    
+    if (interp->had_error) return 0; // Stop sorting if an error occurred
+
+    // Case 1: Use user-provided callback function
+    if (!IS_NIL(sort_context.callback_fn)) {
+        Value args[2] = { val_a, val_b };
+        ExecResult res = call_value(interp, sort_context.callback_fn, 2, args);
+        if (res.status != EXEC_OK || interp->had_error) {
+            // Propagate error. had_error is set by runtime_error.
+            return 0;
+        }
+        if (!IS_NUMERIC(res.value)) {
+            runtime_error(interp, "Sort comparison function must return a number.");
+            return 0;
+        }
+        double d = AS_NUMBER(res.value);
+        if (d < 0) return -1;
+        if (d > 0) return 1;
+        return 0;
+    }
+
+    // Case 2: Default comparison
+    if (IS_NUMERIC(val_a) && IS_NUMERIC(val_b)) {
+        double diff = AS_NUMBER(val_a) - AS_NUMBER(val_b);
+        if (diff < 0) return -1;
+        if (diff > 0) return 1;
+        return 0;
+    }
+
+    // Default: Lexicographic (string-based) comparison
+    ObjString* s_a = value_to_string(interp, val_a);
+    push_root(interp, (Obj*)s_a);
+    ObjString* s_b = value_to_string(interp, val_b);
+    pop_root(interp);
+
+    int cmp = strcmp(s_a->chars, s_b->chars);
+    return cmp;
+}
+
+static Value builtin_array_sort(Interpreter* interp, size_t argc, Value* args) {
+    if ((argc < 1 || argc > 2) || !IS_ARRAY(args[0])) {
+        runtime_error(interp, "array.sort(arr, [fn]) requires an array.");
+        return make_nil();
+    }
+    
+    ObjArray* array = AS_ARRAY(args[0]);
+    Value callback = make_nil();
+    if (argc == 2) {
+        if (!IS_FUNCTION(args[1]) && !IS_BUILTIN(args[1]) && !IS_NIL(args[1])) {
+             runtime_error(interp, "Sort comparison must be a function or nil.");
+             return make_nil();
+        }
+        callback = args[1];
+    }
+
+    sort_context.interp = interp;
+    sort_context.callback_fn = callback;
+
+    if (IS_OBJ(callback)) {
+        push_root(interp, AS_OBJ(callback));
+    }
+    
+    // The array itself is an argument to the builtin, so it is on the value stack
+    // and considered rooted. Thus, we don't need to explicitly root it here.
+    qsort(array->values, array->count, sizeof(Value), sort_compare_wrapper);
+    
+    if (IS_OBJ(callback)) {
+        pop_root(interp);
+    }
+    
+    // Check if the comparator set an error
+    if (interp->had_error) {
+        return make_nil();
+    }
+
+    return args[0]; // Return the sorted (in-place) array
+}
+
+static Value builtin_array_reverse(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_ARRAY(args[0])) {
+        runtime_error(interp, "array.reverse(arr) requires an array.");
+        return make_nil();
+    }
+    ObjArray* array = AS_ARRAY(args[0]);
+    if (array->count < 2) return args[0];
+
+    int start = 0;
+    int end = array->count - 1;
+    while (start < end) {
+        Value temp = array->values[start];
+        array->values[start] = array->values[end];
+        array->values[end] = temp;
+        start++;
+        end--;
+    }
+    return args[0];
+}
+
+static Value builtin_array_shuffle(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_ARRAY(args[0])) {
+        runtime_error(interp, "array.shuffle(arr) requires an array.");
+        return make_nil();
+    }
+    ObjArray* array = AS_ARRAY(args[0]);
+    if (array->count < 2) return args[0];
+    
+    // Fisher-Yates shuffle
+    for (int i = array->count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        Value temp = array->values[i];
+        array->values[i] = array->values[j];
+        array->values[j] = temp;
+    }
+    return args[0];
 }
 
 static Value builtin_math_abs(Interpreter* interp, size_t argc, Value* args) {

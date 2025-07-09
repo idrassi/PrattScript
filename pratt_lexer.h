@@ -49,6 +49,6 @@ typedef struct {
 
 /*── Lexer functions ──────────────────────────────────────────────────────*/
 void  pratt_lexer_init(PrattLexer *lex, const char *source);
-Token pratt_lexer_next(void *ctx);
+PrattToken pratt_lexer_next(void *ctx);
 
 #endif /* PRATT_LEXER_H */

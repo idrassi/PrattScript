@@ -50,7 +50,7 @@ typedef enum {
     T_TRUE, T_FALSE, T_NIL,
 
     /* Operators */
-    T_PLUS, T_MINUS, T_STAR, T_SLASH, T_CARET,
+    T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT, T_CARET,
     T_EQUAL, T_EQUAL_EQUAL, T_BANG_EQUAL, T_LESS, T_LESS_EQUAL, T_GREATER, T_GREATER_EQUAL,
     T_AMP_AMP, T_PIPE_PIPE,
     T_QUESTION, T_COLON,
@@ -80,7 +80,7 @@ ASTNode *default_dot_infix       (Parser *p, ASTNode *left);
 
 
 /*── A token name provider for this default token set ───────────────────*/
-const char *default_token_name(TokenType t);
+const char *default_token_name(PrattTokenType t);
 
 /*── A drop-in rule table ─────────────────────────────────────────────────*/
 extern const ParseRule default_rules[];

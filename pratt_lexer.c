@@ -40,7 +40,7 @@
 // --- Keyword table ---
 typedef struct {
     const char *name;
-    TokenType   type;
+    PrattTokenType   type;
 } Keyword;
 
 static Keyword keywords[] = {
@@ -150,8 +150,8 @@ static void skip_whitespace(PrattLexer *lex) {
 }
 
 /*── Make a token ────────────────────────────────────────────────────────*/
-static Token make_token(PrattLexer *lex, TokenType type, const char *start, size_t length) {
-    Token token;
+static PrattToken make_token(PrattLexer *lex, PrattTokenType type, const char *start, size_t length) {
+    PrattToken token;
     token.type   = type;
     token.start  = start;
     token.length = length;
@@ -161,7 +161,7 @@ static Token make_token(PrattLexer *lex, TokenType type, const char *start, size
 }
 
 /*── Scan a number ───────────────────────────────────────────────────────*/
-static Token scan_number(PrattLexer *lex) {
+static PrattToken scan_number(PrattLexer *lex) {
     const char *start = &lex->source[lex->pos];
     
     while (isdigit(lexer_peek(lex))) {
@@ -194,7 +194,7 @@ static Token scan_number(PrattLexer *lex) {
 }
 
 /*── Scan a string ───────────────────────────────────────────────────────*/
-static Token scan_string(PrattLexer *lex) {
+static PrattToken scan_string(PrattLexer *lex) {
     /* The opening quote was eaten by pratt_lexer_next().
        lex->pos now points at the first character of the string body. */
     const char *start_of_literal  = &lex->source[lex->pos - 1]; /* for errors */
@@ -257,7 +257,7 @@ static Token scan_string(PrattLexer *lex) {
 }
 
 /*── Helper to check if a lexeme is a keyword ────────────────────────────*/
-static TokenType check_keyword(const char *start, size_t length) {
+static PrattTokenType check_keyword(const char *start, size_t length) {
     for (Keyword *k = keywords; k->name; k++) {
         if (strlen(k->name) == length && memcmp(start, k->name, length) == 0) {
             return k->type;
@@ -267,7 +267,7 @@ static TokenType check_keyword(const char *start, size_t length) {
 }
 
 /*── Scan an identifier or keyword ───────────────────────────────────────*/
-static Token scan_identifier(PrattLexer *lex) {
+static PrattToken scan_identifier(PrattLexer *lex) {
     const char *start = &lex->source[lex->pos];
     
     while (isalnum(lexer_peek(lex)) || lexer_peek(lex) == '_') {
@@ -275,12 +275,12 @@ static Token scan_identifier(PrattLexer *lex) {
     }
     
     size_t length = &lex->source[lex->pos] - start;
-    TokenType type = check_keyword(start, length); // Check against keywords
+    PrattTokenType type = check_keyword(start, length); // Check against keywords
     return make_token(lex, type, start, length);
 }
 
 /*── Main lexer function ─────────────────────────────────────────────────*/
-Token pratt_lexer_next(void *ctx) {
+PrattToken pratt_lexer_next(void *ctx) {
     PrattLexer *lex = (PrattLexer *)ctx;
     
     skip_whitespace(lex);
@@ -310,6 +310,7 @@ Token pratt_lexer_next(void *ctx) {
         case '-': return make_token(lex, T_MINUS,     start_ptr, 1);
         case '*': return make_token(lex, T_STAR,      start_ptr, 1);
         case '/': return make_token(lex, T_SLASH,     start_ptr, 1);
+        case '%': return make_token(lex, T_PERCENT,   start_ptr, 1);
         case '^': return make_token(lex, T_CARET,     start_ptr, 1);
         case '(': return make_token(lex, T_LPAREN,    start_ptr, 1);
         case ')': return make_token(lex, T_RPAREN,    start_ptr, 1);

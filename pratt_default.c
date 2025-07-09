@@ -54,10 +54,10 @@
 extern void *arena_alloc(Arena *a, size_t sz);
 extern void parser_error(Parser *p, const char *fmt, ...);
 extern ASTNode *parse_precedence(Parser *p, int prec);
-extern int check(Parser *p, TokenType t);
-extern Token advance(Parser *p);
-extern int consume(Parser *p, TokenType t, const char *desc);
-extern Token peek(Parser *p);
+extern int check(Parser *p, PrattTokenType t);
+extern PrattToken advance(Parser *p);
+extern int consume(Parser *p, PrattTokenType t, const char *desc);
+extern PrattToken peek(Parser *p);
 
 /*── Helpers to allocate ASTNodes in arena ───────────────────────────────*/
 static ASTNode *new_node(Parser *p, ASTNodeType type) {
@@ -69,7 +69,7 @@ static ASTNode *new_node(Parser *p, ASTNodeType type) {
 }
 
 ASTNode *default_literal_prefix(Parser *p) {
-    Token t = p->cur;
+    PrattToken t = p->cur;
     switch (t.type) {
         case T_TRUE: {
             ASTNode *n = new_node(p, AST_BOOL);
@@ -113,7 +113,7 @@ static ASTNode *new_ternary_node(Parser *p, ASTNode *cond, ASTNode *then_b, ASTN
 
 /*── number: parse as int64_t or double, intelligently ──────────────────*/
 ASTNode *default_number_prefix(Parser *p) {
-    Token t = p->cur;
+    PrattToken t = p->cur;
     /* Micro-opt: use a stack buffer for most numeric literals */
     enum { SMALL_NUM_BUF = 64 };
     char stack_buf[SMALL_NUM_BUF];
@@ -189,7 +189,7 @@ ASTNode *default_number_prefix(Parser *p) {
 
 /*── string: copy into arena ────────────────────────────────────────────*/
 ASTNode *default_string_prefix(Parser *p) {
-    Token t = p->cur;
+    PrattToken t = p->cur;
     ASTNode *n = new_node(p, AST_STRING);
     if (!n) return NULL;
 
@@ -209,7 +209,7 @@ ASTNode *default_string_prefix(Parser *p) {
 
 /*── identifier: intern string and create node ──────────────────────────*/
 ASTNode *default_ident_prefix(Parser *p) {
-    Token t = p->cur;
+    PrattToken t = p->cur;
     ASTNode *n = new_node(p, AST_IDENT);
     if (!n) return NULL;
 
@@ -238,7 +238,7 @@ ASTNode *default_grouping_prefix(Parser *p) {
 
 /*── array literal: '[' (expr (',' expr)*)? ']' ──────────────────────────*/
 ASTNode *default_array_prefix(Parser *p) {
-    Token bracket = p->cur;
+    PrattToken bracket = p->cur;
     ASTNode **elements = NULL;
     size_t capacity = 0;
     size_t count = 0;
@@ -274,7 +274,7 @@ ASTNode *default_array_prefix(Parser *p) {
 
 /*── object literal: '{' (key:expr (',' key:expr)*)? '}' ──────────────────*/
 ASTNode *default_object_prefix(Parser *p) {
-    Token brace = p->cur;
+    PrattToken brace = p->cur;
     const char **keys = NULL;
     ASTNode **values = NULL;
     size_t capacity = 0;
@@ -303,7 +303,7 @@ ASTNode *default_object_prefix(Parser *p) {
                 parser_error(p, "Expected identifier or string as object key.");
                 return NULL;
             }
-            Token key_tok = advance(p);
+            PrattToken key_tok = advance(p);
             Interpreter* interp = p->user_ctx;
             ObjString* key_obj = interpreter_intern_string(interp, key_tok.start, key_tok.length);
             if (!key_obj) { parser_error(p, "Out of memory"); return NULL; }
@@ -334,7 +334,7 @@ ASTNode *default_object_prefix(Parser *p) {
 
 /*── unary: prefix '-' ─────────────────────────────────────────────────*/
 ASTNode *default_unary_prefix(Parser *p) {
-    Token op = p->cur; // The dispatcher consumed the '-'
+    PrattToken op = p->cur; // The dispatcher consumed the '-'
     ASTNode *child = parse_precedence(p, PREC_UNARY);
     if (!child) return NULL;
     ASTNode *n = new_node(p, AST_UNARY);
@@ -346,7 +346,7 @@ ASTNode *default_unary_prefix(Parser *p) {
 
 /*── binary: left (op) right ────────────────────────────────────────────*/
 ASTNode *default_binary_infix(Parser *p, ASTNode *left) {
-    Token op = p->cur;
+    PrattToken op = p->cur;
     const ParseRule *rule = &p->rules[op.type];
     ASTNode *right = parse_precedence(p, rule->rbp);
     if (!right) return NULL;
@@ -404,7 +404,7 @@ static ASTNode *default_call_infix(Parser *p, ASTNode *callee) {
         } while (check(p, T_COMMA) && (advance(p), 1));
     }
 
-    Token rparen_tok;
+    PrattToken rparen_tok;
     if (!consume(p, T_RPAREN, "')' after arguments")) return NULL;
     rparen_tok = p->cur;
 
@@ -422,12 +422,12 @@ static ASTNode *default_call_infix(Parser *p, ASTNode *callee) {
 
 /*── infix: dot property access - expr '.' IDENT ───────────────────────*/
 ASTNode *default_dot_infix(Parser *p, ASTNode *left) {
-    Token dot_tok = p->cur; // The '.' token
+    PrattToken dot_tok = p->cur; // The '.' token
 
     if (!consume(p, T_IDENT, "property name after '.'")) {
         return NULL;
     }
-    Token property_tok = p->cur;
+    PrattToken property_tok = p->cur;
 
     // To simplify the interpreter, we transform `obj.prop` into the
     // same AST structure as `obj["prop"]`. This means creating an
@@ -464,7 +464,7 @@ ASTNode *default_dot_infix(Parser *p, ASTNode *left) {
 
 /*── infix: index access - expr '[' index_expr ']' ─────────────────────*/
 ASTNode *default_index_infix(Parser *p, ASTNode *object) {
-    Token bracket = p->cur;
+    PrattToken bracket = p->cur;
     ASTNode *index = parse_precedence(p, PREC_NONE);
     if (!index) return NULL;
 
@@ -486,7 +486,7 @@ ASTNode *default_assignment_infix(Parser *p, ASTNode *left) {
         return NULL;
     }
 
-    Token op = p->cur; // The '=' token
+    PrattToken op = p->cur; // The '=' token
     // Assignment is right-associative, so we parse with a slightly lower precedence
     ASTNode *value = parse_precedence(p, PREC_ASSIGNMENT - 1);
    if (!value) return NULL;
@@ -510,7 +510,7 @@ static Statement *new_statement(Parser *p, StatementType type) {
 
 /*── Break Statement: 'break' ';' ───────────────────────────────────────*/
 static Statement *break_statement(Parser *p) {
-    Token keyword = p->next; // The 'break' token
+    PrattToken keyword = p->next; // The 'break' token
     advance(p); // consume 'break'
     if (!consume(p, T_SEMICOLON, "';' after 'break'")) return NULL;
 
@@ -522,7 +522,7 @@ static Statement *break_statement(Parser *p) {
 
 /*── Continue Statement: 'continue' ';' ─────────────────────────────────*/
 static Statement *continue_statement(Parser *p) {
-    Token keyword = p->next; // The 'continue' token
+    PrattToken keyword = p->next; // The 'continue' token
     advance(p); // consume 'continue'
     if (!consume(p, T_SEMICOLON, "';' after 'continue'")) return NULL;
 
@@ -630,7 +630,7 @@ static Statement *for_statement(Parser *p) {
 
 /*── Return Statement: 'return' expression? ';' ─────────────────────────*/
 static Statement *return_statement(Parser *p) {
-    Token keyword = p->next;
+    PrattToken keyword = p->next;
     advance(p); // consume 'return'
     ASTNode *value = NULL;
     if (!check(p, T_SEMICOLON)) {
@@ -666,7 +666,7 @@ static Statement *expression_statement(Parser *p) {
 static Statement *declaration(Parser *p) {
     advance(p); // consume 'var'
     if (!consume(p, T_IDENT, "variable name")) return NULL;
-    Token name_tok = p->cur;
+    PrattToken name_tok = p->cur;
 
     // Intern the variable name here at parse time.
     Interpreter *interp = p->user_ctx;
@@ -695,7 +695,7 @@ static Statement *declaration(Parser *p) {
 static Statement *function_statement(Parser *p) {
     advance(p); // consume 'function'
     if (!consume(p, T_IDENT, "function name")) return NULL;
-    Token name_tok = p->cur;
+    PrattToken name_tok = p->cur;
 
     Interpreter *interp = p->user_ctx;
     ObjString *name_obj = interpreter_intern_string(interp, name_tok.start, name_tok.length);
@@ -705,14 +705,14 @@ static Statement *function_statement(Parser *p) {
     if (!consume(p, T_LPAREN, "'(' after function name")) return NULL;
 
     const char **params = NULL;
-    Token *param_toks = NULL;
+    PrattToken *param_toks = NULL;
     size_t param_count = 0;
     size_t param_capacity = 0;
 
     if (!check(p, T_RPAREN)) {
         do {
             if (!consume(p, T_IDENT, "parameter name")) return NULL;
-            Token param_tok = p->cur;
+            PrattToken param_tok = p->cur;
             ObjString *param_obj = interpreter_intern_string(interp, param_tok.start, param_tok.length);
             const char *param_name = param_obj->chars;
 
@@ -720,10 +720,10 @@ static Statement *function_statement(Parser *p) {
                 size_t old_cap = param_capacity;
                 param_capacity = old_cap < 8 ? 8 : old_cap * 2;
                 const char **new_params = arena_alloc(p->arena, param_capacity * sizeof(const char*));
-                Token *new_toks = arena_alloc(p->arena, param_capacity * sizeof(Token));
+                PrattToken *new_toks = arena_alloc(p->arena, param_capacity * sizeof(PrattToken));
                 if (!new_params || !new_toks) { parser_error(p, "Out of memory"); return NULL; }
                 if (params) memcpy(new_params, params, old_cap * sizeof(const char*));
-                if (param_toks) memcpy(new_toks, param_toks, old_cap * sizeof(Token));
+                if (param_toks) memcpy(new_toks, param_toks, old_cap * sizeof(PrattToken));
                 params = new_params;
                 param_toks = new_toks;
             }
@@ -762,7 +762,7 @@ ASTNode *default_function_expression_prefix(Parser *p) {
     // Function expressions can be anonymous or named.
     if (check(p, T_IDENT)) {
         advance(p);
-        Token name_tok = p->cur;
+        PrattToken name_tok = p->cur;
         Interpreter *interp = p->user_ctx;
         ObjString *name_obj = interpreter_intern_string(interp, name_tok.start, name_tok.length);
         if (!name_obj) { parser_error(p, "Out of memory"); return NULL; }
@@ -772,7 +772,7 @@ ASTNode *default_function_expression_prefix(Parser *p) {
     if (!consume(p, T_LPAREN, "'(' after function name")) return NULL;
 
     const char **params = NULL;
-    Token *param_toks = NULL;
+    PrattToken *param_toks = NULL;
     size_t param_count = 0;
     size_t param_capacity = 0;
     Interpreter *interp = p->user_ctx;
@@ -780,7 +780,7 @@ ASTNode *default_function_expression_prefix(Parser *p) {
     if (!check(p, T_RPAREN)) {
         do {
            if (!consume(p, T_IDENT, "parameter name")) return NULL;
-            Token param_tok = p->cur;
+            PrattToken param_tok = p->cur;
             ObjString *param_obj = interpreter_intern_string(interp, param_tok.start, param_tok.length);
             if (!param_obj) { parser_error(p, "Out of memory"); return NULL; }
             const char *param_name = param_obj->chars;
@@ -789,10 +789,10 @@ ASTNode *default_function_expression_prefix(Parser *p) {
                 size_t old_cap = param_capacity;
                 param_capacity = old_cap < 8 ? 8 : old_cap * 2;
                const char **new_params = arena_alloc(p->arena, param_capacity * sizeof(const char*));
-                Token *new_toks = arena_alloc(p->arena, param_capacity * sizeof(Token));
+                PrattToken *new_toks = arena_alloc(p->arena, param_capacity * sizeof(PrattToken));
                 if (!new_params || !new_toks) { parser_error(p, "Out of memory"); return NULL; }
                 if (params) memcpy(new_params, params, old_cap * sizeof(const char*));
-                if (param_toks) memcpy(new_toks, param_toks, old_cap * sizeof(Token));
+                if (param_toks) memcpy(new_toks, param_toks, old_cap * sizeof(PrattToken));
                 params = new_params;
                 param_toks = new_toks;
             }
@@ -872,7 +872,7 @@ Statement *parse_block(Parser *p) {
 }
 
 /*── A token name provider for the default token set ────────────────────*/
-const char *default_token_name(TokenType t) {
+const char *default_token_name(PrattTokenType t) {
     if (t < T_USER_BASE) {
         switch (t) {
             case T_EOF:   return "end of file";
@@ -902,6 +902,7 @@ const char *default_token_name(TokenType t) {
         case T_MINUS:     return "'-'";
         case T_STAR:      return "'*'";
         case T_SLASH:     return "'/'";
+        case T_PERCENT:   return "'%'";
         case T_CARET:     return "'^'";
         case T_EQUAL:     return "'='";
         case T_EQUAL_EQUAL: return "'=='";
@@ -955,6 +956,7 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_PLUS]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_TERM,   PREC_TERM),
     [T_STAR]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_SLASH]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
+    [T_PERCENT]   = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_CARET]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_POWER,  PREC_POWER-1),
 
     /* Comparisons (left-associative) */

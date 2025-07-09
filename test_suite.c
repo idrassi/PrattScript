@@ -98,11 +98,11 @@ typedef struct {
 static TestHarness *tracked_harnesses[MAX_TRACKED_HARNESSES];
 static int          tracked_count = 0;
 
-static Token bad_token_lexer(void *ctx) {
+static PrattToken bad_token_lexer(void *ctx) {
     // The context `ctx` is a pointer to the token ID we want to emit.
     int token_id = *(int*)ctx;
     // Return a token with the bad ID. Other fields are dummy values.
-    return (Token){.type = token_id, .start = "X", .length = 1, .line=1, .col=1};
+    return (PrattToken){.type = token_id, .start = "X", .length = 1, .line=1, .col=1};
 }
 
 static void track_harness(TestHarness *h) {
@@ -438,6 +438,39 @@ static void test_division() {
     TEST_PASS();
 }
 
+/*── Modulo Operator Tests ───────────────────────────────────────────────*/
+static void test_modulo_operator() {
+    TEST_START("Parsing: simple modulo");
+    ASTNode *ast = parse_expression_test("10 % 3");
+    ASSERT(ast != NULL, "Expected AST node");
+    ASSERT(ast->type == AST_BINARY, "Expected binary node");
+    ASSERT(ast->as.binary.op.type == T_PERCENT, "Expected percent operator");
+    ASSERT(ast->as.binary.left->type == AST_NUMBER, "Expected number on left");
+    ASSERT(ast->as.binary.right->type == AST_NUMBER, "Expected number on right");
+    TEST_PASS();
+
+    TEST_START("Parsing: modulo precedence");
+    ast = parse_expression_test("5 + 10 % 3");
+    ASSERT(ast != NULL, "Expected AST node");
+    ASSERT(ast->type == AST_BINARY, "Expected binary node");
+    ASSERT(ast->as.binary.op.type == T_PLUS, "Expected plus at root");
+    ASTNode *right = ast->as.binary.right;
+    ASSERT(right->type == AST_BINARY, "Expected binary on right");
+    ASSERT(right->as.binary.op.type == T_PERCENT, "Expected percent on right");
+    TEST_PASS();
+
+    TEST_START("Parsing: modulo left-associativity");
+    ast = parse_expression_test("20 % 7 % 4");
+    ASSERT(ast != NULL, "Expected AST node");
+    ASSERT(ast->type == AST_BINARY, "Expected binary node");
+    ASSERT(ast->as.binary.op.type == T_PERCENT, "Expected percent at root");
+    ASTNode *left = ast->as.binary.left;
+    ASSERT(left->type == AST_BINARY, "Expected binary on left");
+    ASSERT(left->as.binary.op.type == T_PERCENT, "Expected percent on left");
+    TEST_PASS();
+}
+
+
 /*── Precedence tests ────────────────────────────────────────────────────*/
 static void test_precedence_multiplication_first() {
     TEST_START("Precedence: multiplication before addition");
@@ -735,7 +768,7 @@ static void test_negative_token_id_error() {
     ASTNode *ast = parse_expression(&p);
     ASSERT(ast == NULL, "Expected NULL AST on negative ID error");
     ASSERT(p.had_error, "Parser should report error on negative ID");
-    ASSERT(p.last_error.message && strstr(p.last_error.message, "Token ID"), "Error should complain about token ID, got: %s", p.last_error.message);
+    ASSERT(p.last_error.message && strstr(p.last_error.message, "PrattToken ID"), "Error should complain about PrattToken ID, got: %s", p.last_error.message);
     parser_destroy(&p);
     interpreter_destroy(&interpreter);
     TEST_PASS();
@@ -775,7 +808,7 @@ static void test_error_recovery() {
     Parser p;
     parser_init(&p, pratt_lexer_next, &lex, &interpreter, default_rules, default_rule_count, default_token_name, &interpreter.arena);
     p.recover_errors = 1;
-    TokenType sync_set[] = { T_SEMICOLON };
+    PrattTokenType sync_set[] = { T_SEMICOLON };
     parser_set_sync_tokens(&p, sync_set, 1);
 
     ASTNode *ast1 = parse_expression_until(&p, sync_set, 1);
@@ -870,7 +903,7 @@ static void test_sparse_token_id_error() {
     // 4. Assert the expected error state
     ASSERT(ast == NULL, "Expected NULL AST on sparse ID error");
     ASSERT(p.had_error, "Parser should report error on sparse ID");
-    ASSERT(p.last_error.message && strstr(p.last_error.message, "Token ID"),
+    ASSERT(p.last_error.message && strstr(p.last_error.message, "PrattToken ID"),
            "Error message should complain about invalid token ID, got: %s", p.last_error.message);
 
     // 5. Clean up
@@ -1180,7 +1213,7 @@ static void test_shadowing_in_blocks() {
 
     Statement *outer_var = ast->as.block.list[0];
     ASSERT(outer_var->type == ST_VAR, "Expected outer var decl");
-    Token outer_x_tok = outer_var->as.var.name_tok;
+    PrattToken outer_x_tok = outer_var->as.var.name_tok;
 
     Statement *inner_block = ast->as.block.list[1];
     ASSERT(inner_block->type == ST_BLOCK, "Expected inner block");
@@ -1188,7 +1221,7 @@ static void test_shadowing_in_blocks() {
 
     Statement *inner_var = inner_block->as.block.list[0];
     ASSERT(inner_var->type == ST_VAR, "Expected inner var decl");
-    Token inner_x_tok = inner_var->as.var.name_tok;
+    PrattToken inner_x_tok = inner_var->as.var.name_tok;
     
     ASSERT(outer_x_tok.start != inner_x_tok.start, "Tokens for shadowed variables should be different");
     
@@ -2343,6 +2376,162 @@ static void run_extra_builtin_tests() {
         "1twotrue\n1, two, true\n\n"
     );
     run_interpreter_error_test("Builtin Error: array.join wrong sep", "array.join([], 1);", "optional string separator");
+
+    printf("Core, Global Helpers\n");
+    printf("--------------------\n");
+    run_interpreter_test("Core: range()",
+        "println(range(0, 5));"
+        "println(range(2, 8, 2));"
+        "println(range(3, 0, -1));",
+        "[0, 1, 2, 3, 4]\n[2, 4, 6]\n[3, 2, 1]\n"
+    );
+    run_interpreter_error_test("Core: range() error", "range(0, 5, 0);", "step argument cannot be zero");
+
+    run_interpreter_test("Core: min() and max()",
+        "println(min(5, 2, 8, 1));"
+        "println(max(5, 2, 8, 1));"
+        "println(max(10, 15.5));"
+        "println(min(-1, -5.5));",
+        "1\n8\n15.5\n-5.5\n"
+    );
+    run_interpreter_error_test("Core: min() error", "min();", "requires at least one argument");
+    run_interpreter_error_test("Core: max() error", "max(1, \"a\");", "arguments must be numbers");
+
+    run_interpreter_test("Core: round()",
+        "println(round(3.14159));"
+        "println(round(3.14159, 2));"
+        "println(round(12345.6, -2));", // Note: The C impl does not support negative digits. Test based on actual impl.
+                                        // The provided C impl with pow(10, -2) works.
+        "3\n3.14\n12300\n"
+    );
+    run_interpreter_error_test("Core: round() error", "round(1, 2, 3);", "expects 1 or 2 arguments");
+
+    run_interpreter_test("Core: sleep()",
+        "sleep(1); println(\"ok\");", // Just test it runs without error.
+        "ok\n"
+    );
+    run_interpreter_error_test("Core: sleep() error", "sleep(-1);", "cannot be negative");
+
+
+    printf("\nString Object Extensions\n");
+    printf("------------------------\n");
+    run_interpreter_test("String: replace()",
+        "println(string.replace(\"one two two three\", \"two\", \"Z\"));"
+        "println(string.replace(\"one two two three\", \"two\", \"Z\", 1));",
+        "one Z Z three\none Z two three\n"
+    );
+
+    run_interpreter_test("String: startsWith() / endsWith()",
+        "println(string.startsWith(\"foobar\", \"foo\"));"
+        "println(string.startsWith(\"foobar\", \"bar\"));"
+        "println(string.endsWith(\"foobar\", \"bar\"));"
+        "println(string.endsWith(\"foobar\", \"foo\"));",
+        "true\nfalse\ntrue\nfalse\n"
+    );
+    run_interpreter_error_test("String: startsWith() error", "string.startsWith(\"a\", 1);", "requires two string arguments");
+
+    run_interpreter_test("String: indexOf()",
+        "println(string.indexOf(\"hello world\", \"world\"));"
+        "println(string.indexOf(\"hello world\", \"o\"));"
+        "println(string.indexOf(\"hello world\", \"o\", 5));"
+        "println(string.indexOf(\"hello world\", \"z\"));",
+        "6\n4\n7\n-1\n"
+    );
+    
+    run_interpreter_test("String: substring()",
+        "println(string.substring(\"abcdef\", 1, 4));"
+        "println(string.substring(\"abcdef\", 3, 3));",
+        "bcd\n\n"
+    );
+
+    run_interpreter_test("String: repeat()",
+        "println(string.repeat(\"ha\", 3));",
+        "hahaha\n"
+    );
+    run_interpreter_error_test("String: repeat() error", "string.repeat(\"a\", -1);", "count cannot be negative");
+
+    run_interpreter_test("String: padStart() / padEnd()",
+        "println(string.padStart(\"abc\", 5, \"0\"));"
+        "println(string.padEnd(\"abc\", 5, \"xy\"));",
+        "00abc\nabcxy\n"
+    );
+    run_interpreter_error_test("String: padStart() error", "string.padStart(\"a\");", "requires a string and an integer length");
+
+
+    printf("\nArray Object Extensions\n");
+    printf("-----------------------\n");
+    run_interpreter_test("Array: map()",
+        "function double(x) { return x * 2; } "
+        "println(array.map([1, 2, 3], double));",
+        "[2, 4, 6]\n"
+    );
+    
+    run_interpreter_test("Array: filter()",
+        "function isOdd(x) { return x % 2 != 0; } "
+        "println(array.filter([1, 2, 3, 4, 5], isOdd));",
+        "[1, 3, 5]\n"
+    );
+
+    run_interpreter_test("Array: reduce()",
+        "function sum(a, b) { return a + b; } "
+        "println(array.reduce([1, 2, 3, 4], sum));"
+        "println(array.reduce([1, 2, 3, 4], sum, 10));",
+        "10\n20\n"
+    );
+    run_interpreter_error_test("Array: reduce() error", "array.reduce([], function(){});", "reduce of empty array with no initial value");
+
+    run_interpreter_test("Array: indexOf() / includes()",
+        "var a = [10, \"b\", 20];"
+        "println(array.indexOf(a, \"b\"));"
+        "println(array.indexOf(a, 99));"
+        "println(array.includes(a, 20));"
+        "println(array.includes(a, false));",
+        "1\n-1\ntrue\nfalse\n"
+    );
+
+    run_interpreter_test("Array: sort() default",
+        "var a = [\"c\", \"a\", \"b\", 10, 2]; println(array.sort(a));", // Default is lexicographic for strings
+        "[2, 10, a, b, c]\n"
+    );
+
+    run_interpreter_test("Array: sort() with numbers",
+        "var a = [3, 1, 10, 2]; println(array.sort(a));", // Default on numbers works as expected
+        "[1, 2, 3, 10]\n"
+    );
+
+    run_interpreter_test("Array: sort() custom function",
+        "function descending(a, b) { return b - a; } "
+        "var a = [3, 1, 10, 2]; println(array.sort(a, descending));",
+        "[10, 3, 2, 1]\n"
+    );
+
+    run_interpreter_test("Array: reverse()",
+        "var a = [1, 2, 3]; println(array.reverse(a));",
+        "[3, 2, 1]\n"
+    );
+
+    run_interpreter_test("Array: shuffle()",
+        "var a = [1, 2, 3, 4, 5]; array.shuffle(a); println(len(a) == 5);", // Just check it runs and returns same length
+        "true\n"
+    );
+}
+
+/*── Interpreter tests for the modulo operator ─────────────────────────*/
+static void test_modulo_execution() {
+    run_interpreter_test("Modulo: Integer operands", "println(10 % 3);", "1\n");
+    run_interpreter_test("Modulo: Result is zero", "println(10 % 2);", "0\n");
+    run_interpreter_test("Modulo: Negative operands (int)", "println(-10 % 3); println(10 % -3); println(-10 % -3);", "-1\n1\n-1\n");
+    run_interpreter_test("Modulo: Floating point operands", "println(10.5 % 3.0);", "1.5\n");
+    run_interpreter_test("Modulo: Mixed type (int % double)", "println(10 % 3.5);", "3\n");
+    run_interpreter_test("Modulo: Mixed type (double % int)", "println(10.5 % 3);", "1.5\n");
+    run_interpreter_test("Modulo: Zero as left operand", "println(0 % 5);", "0\n");
+    run_interpreter_test("Modulo: Precedence with addition", "println(5 + 10 % 3);", "6\n");
+    run_interpreter_test("Modulo: Precedence with multiplication", "println(2 * 10 % 3);", "2\n");
+    run_interpreter_test("Modulo: Left-associativity execution", "println(20 % 7 % 4);", "2\n");
+    run_interpreter_error_test("Modulo Error: by zero (int)", "10 % 0;", "Modulo by zero.");
+    run_interpreter_error_test("Modulo Error: by zero (float)", "10.0 % 0.0;", "Modulo by zero.");
+    run_interpreter_error_test("Modulo Error: Non-numeric operand (left)", "\"a\" % 5;", "Operands for '%' must be numbers.");
+    run_interpreter_error_test("Modulo Error: Non-numeric operand (right)", "5 % \"a\";", "Operands for '%' must be numbers.");
 }
 
 /*── Run all tests ───────────────────────────────────────────────────────*/
@@ -2361,6 +2550,7 @@ static void run_all_tests() {
     test_simple_subtraction();
     test_multiplication();
     test_division();
+    test_modulo_operator();
     
     // Precedence tests
     test_precedence_multiplication_first();
@@ -2461,6 +2651,7 @@ static void run_all_tests() {
     test_simple_break();
     test_nested_break();
     test_break_does_not_exit_function();
+    test_modulo_execution();
     
     printf("\nContinue Statement Tests\n");
     printf("------------------------\n");
