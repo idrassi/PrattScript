@@ -59,9 +59,6 @@ static void map_init(Map* map);
 // Helper macros for creating ExecResult structs
 #define OK_RESULT(v) ((ExecResult){EXEC_OK, (v)})
 #define RETURN_RESULT(v) ((ExecResult){EXEC_RETURN, (v)})
-// --- Helper macros for creating ExecResult structs ---
-#define OK_RESULT(v)     ((ExecResult){EXEC_OK,     (v)})
-#define RETURN_RESULT(v) ((ExecResult){EXEC_RETURN, (v)})
 #define BREAK_RESULT()   ((ExecResult){EXEC_BREAK,  make_nil()})
 #define CONTINUE_RESULT() ((ExecResult){EXEC_CONTINUE, make_nil()})
 #define ERROR_RESULT()   ((ExecResult){EXEC_ERROR,  make_nil()})
