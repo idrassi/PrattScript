@@ -1206,6 +1206,73 @@ static void test_if_without_else() {
     TEST_PASS();
 }
 
+/* A structure to hold the outcome of a full parse-and-execute run. */
+typedef struct {
+    bool success;       // True if no parse or runtime errors occurred.
+    bool parse_error;   // True if the parser failed.
+    char parse_error_message[256]; // The parser's error message, if any.
+} RunResult;
+
+/* Centralized helper to parse and execute a source string. */
+static RunResult parse_and_execute(Interpreter* interp, const char* source) {
+    RunResult result = { .success = false, .parse_error = false };
+    result.parse_error_message[0] = '\0';
+
+    // --- 1. Setup Parser ---
+    PrattLexer lex;
+    pratt_lexer_init(&lex, source);
+    Parser parser;
+    parser_init(&parser, pratt_lexer_next, &lex, interp, default_rules, default_rule_count, default_token_name, &interp->arena);
+
+    // --- 2. Parse Loop ---
+    Statement* program_statements[128];
+    size_t num_statements = 0;
+    while (peek(&parser).type != T_EOF && !parser.had_error && num_statements < 128) {
+        Statement *stmt = parse_statement(&parser);
+        if (stmt) {
+            program_statements[num_statements++] = stmt;
+        } else if (parser.had_error) {
+            // Error already flagged by the parser
+            break;
+        }
+    }
+
+    // --- 3. Check for Parse Error ---
+    if (parser.had_error) {
+        result.parse_error = true;
+        if (parser.last_error.message) {
+            strncpy(result.parse_error_message, parser.last_error.message, sizeof(result.parse_error_message) - 1);
+        }
+        parser_destroy(&parser);
+        return result;
+    }
+
+    // The parser is no longer needed; the AST lives on in the interpreter's arena.
+    parser_destroy(&parser);
+
+    // --- 4. Execute Loop ---
+    for (size_t i = 0; i < num_statements; ++i) {
+        ExecResult res = execute(interp, program_statements[i]);
+        if (interp->had_error) break; // A runtime error occurred.
+
+        // Handle top-level control flow errors
+        if (res.status == EXEC_BREAK) {
+            runtime_error(interp, "Cannot 'break' outside of a loop.");
+            break;
+        } else if (res.status == EXEC_RETURN) {
+            runtime_error(interp, "Cannot 'return' from top-level code.");
+            break;
+        }
+    }
+
+    // --- 5. Finalize Result ---
+    if (!interp->had_error) {
+        result.success = true;
+    }
+
+    return result;
+}
+
 /*── Interpreter Tests ──────────────────────────────────────────────────*/
 static char test_output_buffer[4096];
 
@@ -1224,52 +1291,11 @@ static void run_interpreter_test(const char* name, const char* source, const cha
     dup2(stdout_pipe[1], fileno(stdout));
     close(stdout_pipe[1]);
 
-    // --- Set up Interpreter and Parser ---
-    // Interpreter creates and owns the arena.
+    // --- Set up Interpreter and run ---
     Interpreter interp;
     interpreter_init(&interp, DEFAULT_INITIAL_ARENA_SIZE);
 
-    PrattLexer lex;
-    pratt_lexer_init(&lex, source);
-    Parser parser;
-    // Parser uses the interpreter's arena.
-    parser_init(&parser, pratt_lexer_next, &lex, &interp, default_rules, default_rule_count, default_token_name, &interp.arena);
-    
-    // --- Parse ---
-    Statement* program_statements[128];
-    size_t num_statements = 0;
-    while(peek(&parser).type != T_EOF && !parser.had_error && num_statements < 128) {
-        Statement *stmt = parse_statement(&parser);
-        if (stmt) {
-            program_statements[num_statements++] = stmt;
-        } else if (parser.had_error) {
-            break;
-        }
-    }
-    
-    bool had_error = parser.had_error;
-    char error_msg_copy[256] = {0};
-    if (had_error) {
-        strncpy(error_msg_copy, parser.last_error.message, 255);
-    }
-
-    // Parser is no longer needed, its state can be destroyed. The AST lives on.
-    parser_destroy(&parser);
-
-    // --- Interpret ---
-    if (!had_error) {
-        for (size_t i = 0; i < num_statements; ++i) {
-            ExecResult res = execute(&interp, program_statements[i]);
-            if (interp.had_error) break;
-            if (res.status == EXEC_BREAK) {
-                runtime_error(&interp, "Cannot 'break' outside of a loop.");
-                break;
-            } else if (res.status == EXEC_RETURN) {
-                runtime_error(&interp, "Cannot 'return' from top-level code.");
-                break;
-            }
-        }
-    }
+    RunResult result = parse_and_execute(&interp, source);
 
     // --- Restore stdout and read from pipe ---
     fflush(stdout);
@@ -1287,8 +1313,8 @@ static void run_interpreter_test(const char* name, const char* source, const cha
     }
 
     // --- Assert ---
-    if (had_error) {
-        ASSERT(false, "Parse error: %s", error_msg_copy);
+    if (result.parse_error) {
+        ASSERT(false, "Parse error: %s", result.parse_error_message);
     } else if (interp.had_error) {
         ASSERT(false, "Runtime error: %s", interp.error_message);
     } else {
@@ -1308,45 +1334,15 @@ static void run_interpreter_test(const char* name, const char* source, const cha
 static void run_interpreter_error_test(const char* name, const char* source, const char* expected_error_substr) {
     TEST_START(name);
 
-    // --- Set up Interpreter and Parser ---
+    // --- Set up Interpreter and run ---
     Interpreter interp;
     interpreter_init(&interp, DEFAULT_INITIAL_ARENA_SIZE);
 
-    PrattLexer lex;
-    pratt_lexer_init(&lex, source);
-    Parser parser;
-    parser_init(&parser, pratt_lexer_next, &lex, &interp, default_rules, default_rule_count, default_token_name, &interp.arena);
-    
-    // --- Parse ---
-    Statement* program_statements[128];
-    size_t num_statements = 0;
-    while(peek(&parser).type != T_EOF && !parser.had_error && num_statements < 128) {
-        Statement *stmt = parse_statement(&parser);
-        if (stmt) {
-            program_statements[num_statements++] = stmt;
-        } else if (parser.had_error) {
-            break;
-        }
-    }
-    
-    // --- Interpret ---
-    if (!parser.had_error) {
-        for (size_t i = 0; i < num_statements; ++i) {
-            ExecResult res = execute(&interp, program_statements[i]);
-            if (interp.had_error) break;
-            if (res.status == EXEC_BREAK) {
-                runtime_error(&interp, "Cannot 'break' outside of a loop.");
-                break;
-            } else if (res.status == EXEC_RETURN) {
-                runtime_error(&interp, "Cannot 'return' from top-level code.");
-                break;
-            }
-        }
-    }
+    RunResult result = parse_and_execute(&interp, source);
 
     // --- Assert ---
-    if (parser.had_error) {
-        ASSERT(false, "Parse error: %s", parser.last_error.message);
+    if (result.parse_error) {
+        ASSERT(false, "Parse error: %s", result.parse_error_message);
     } else if (!interp.had_error) {
         ASSERT(false, "Expected a runtime error, but none occurred.");
     } else {
@@ -1356,7 +1352,6 @@ static void run_interpreter_error_test(const char* name, const char* source, con
     }
     
     // --- Cleanup ---
-    parser_destroy(&parser);
     interpreter_destroy(&interp);
 
     TEST_PASS();
@@ -1366,46 +1361,23 @@ static void run_interpreter_error_test(const char* name, const char* source, con
 static void run_gc_test(const char* name, const char* source, bool (*check_fn)(Interpreter*)) {
     TEST_START(name);
 
+    // --- Set up Interpreter and run ---
     Interpreter interp;
     interpreter_init(&interp, DEFAULT_INITIAL_ARENA_SIZE);
     
-    PrattLexer lex;
-    pratt_lexer_init(&lex, source);
-    Parser parser;
-    parser_init(&parser, pratt_lexer_next, &lex, &interp, default_rules, default_rule_count, default_token_name, &interp.arena);
+    RunResult result = parse_and_execute(&interp, source);
     
-    Statement* program_statements[128];
-    size_t num_statements = 0;
-    while(peek(&parser).type != T_EOF && !parser.had_error && num_statements < 128) {
-        Statement *stmt = parse_statement(&parser);
-        if (stmt) program_statements[num_statements++] = stmt;
-        else if (parser.had_error) break;
-    }
-
-    if (!parser.had_error) {
-        for (size_t i = 0; i < num_statements; ++i) {
-            ExecResult res = execute(&interp, program_statements[i]);
-            if (interp.had_error) break;
-            if (res.status == EXEC_BREAK) {
-                runtime_error(&interp, "Cannot 'break' outside of a loop.");
-                break;
-            } else if (res.status == EXEC_RETURN) {
-                runtime_error(&interp, "Cannot 'return' from top-level code.");
-                break;
-            }
-        }
-    }
-    
-    if (parser.had_error) {
-        ASSERT(false, "Parse error: %s", parser.last_error.message);
+    // --- Assert ---
+    if (result.parse_error) {
+        ASSERT(false, "Parse error: %s", result.parse_error_message);
     } else if (interp.had_error) {
         ASSERT(false, "Runtime error: %s", interp.error_message);
     } else {
-        bool result = (check_fn == NULL) ? true : check_fn(&interp);
-        ASSERT(result, "GC check function returned false.");
+        bool check_ok = (check_fn == NULL) ? true : check_fn(&interp);
+        ASSERT(check_ok, "GC check function returned false.");
     }
     
-    parser_destroy(&parser);
+    // --- Cleanup ---
     interpreter_destroy(&interp);
     
     TEST_PASS();
