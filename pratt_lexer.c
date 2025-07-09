@@ -95,14 +95,53 @@ static char peek_next(PrattLexer *lex) {
     return lex->source[lex->pos + 1];
 }
 
-/*── Skip whitespace ─────────────────────────────────────────────────────*/
+/*── Skip whitespace and comments ────────────────────────────────────────*/
 static void skip_whitespace(PrattLexer *lex) {
     for (;;) {
         char c = lexer_peek(lex);
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
-            advance_char(lex);
-        } else {
-            break;
+        switch (c) {
+            // Standard whitespace characters
+            case ' ':
+            case '\r':
+            case '\t':
+            case '\n':
+                advance_char(lex);
+                break;
+            
+            // Comments
+            case '/':
+                if (peek_next(lex) == '/') {
+                    // A single-line comment goes until the end of the line.
+                    while (lexer_peek(lex) != '\n' && !is_at_end(lex)) {
+                        advance_char(lex);
+                    }
+                } else if (peek_next(lex) == '*') {
+                    // A multi-line comment.
+                    advance_char(lex); // Consume '/'
+                    advance_char(lex); // Consume '*'
+                    
+                    // Consume characters until we find the closing '*/' or end of file.
+                    // This implementation does not support nested block comments.
+                    while (!is_at_end(lex)) {
+                        if (lexer_peek(lex) == '*' && peek_next(lex) == '/') {
+                            break;
+                        }
+                        advance_char(lex); // This correctly handles newlines inside comments.
+                    }
+                    
+                    if (!is_at_end(lex)) {
+                        advance_char(lex); // Consume '*'
+                        advance_char(lex); // Consume '/'
+                    }
+                } else {
+                    // Not a comment, but the start of a slash token. Stop skipping.
+                    return;
+                }
+                break;
+
+            default:
+                // Not whitespace or a comment, so we're done skipping.
+                return;
         }
     }
 }

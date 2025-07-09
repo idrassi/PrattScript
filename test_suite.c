@@ -538,8 +538,8 @@ static void test_left_associativity_subtraction() {
 }
 
 /*── Grouping tests ──────────────────────────────────────────────────────*/
-static void test_nested_parentheses() {
-    TEST_START("Nested parentheses");
+static void test_nested_parentheses_1() {
+    TEST_START("Nested parentheses - 1");
     ASTNode *ast = parse_expression_test("((2 + 3) * (4 - 1))");
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_BINARY, "Expected binary node");
@@ -548,6 +548,19 @@ static void test_nested_parentheses() {
     // Both sides should be binary operations
     ASSERT(ast->as.binary.left->type == AST_BINARY, "Expected binary on left");
     ASSERT(ast->as.binary.right->type == AST_BINARY, "Expected binary on right");
+    TEST_PASS();
+}
+
+static void test_nested_parentheses_2() {
+    TEST_START("Nested parentheses - 2");
+    ASTNode *ast = parse_expression_test("((((((1 + 2) * 3) - 4) / 5) + 6) * 7)");
+    ASSERT(ast != NULL, "Expected AST node");
+    ASSERT(ast->type == AST_BINARY, "Expected binary node");
+    ASSERT(ast->as.binary.op.type == T_STAR, "Expected multiplication at root");
+    
+    // Both sides should be binary operations
+    ASSERT(ast->as.binary.left->type == AST_BINARY, "Expected binary on left");
+    ASSERT(ast->as.binary.right->type == AST_NUMBER, "Expected number on right");
     TEST_PASS();
 }
 
@@ -1861,6 +1874,57 @@ static void test_numeric_system() {
     run_interpreter_test("Numeric: Builtin len() returns integer", "var a = len(\"hi\"); println(a == 2);", "true\n");
 }
 
+/*── Comment Handling Tests ───────────────────────────────────────────*/
+static void test_comment_handling() {
+    run_interpreter_test("Comments: single line",
+                         "// This is a comment at the start of the file.\n"
+                         "println(123); // This is a comment at the end of a line.\n"
+                         "// This is a comment on its own line.\n"
+                         "println(456);",
+                         "123\n456\n");
+
+    run_interpreter_test("Comments: multi-line",
+                         "/* This is a multi-line comment. */\n"
+                         "println(123);\n"
+                         "println(/* This is an inline multi-line comment. */ 456);",
+                         "123\n456\n");
+
+    run_interpreter_test("Comments: multi-line spanning lines",
+                         "println(123);\n"
+                         "/* This is a\n"
+                         "   multi-line comment with line breaks.\n"
+                         "   It even tracks line numbers correctly. */\n"
+                         "println(456);",
+                         "123\n456\n");
+                         
+    run_interpreter_test("Comments: empty multi-line comment",
+                         "/**/println(1 + /**/ 23);",
+                         "24\n");
+
+    run_interpreter_test("Comments: inside expressions",
+                         "var x = 1 + /* add two */ 2;\n"
+                         "println(x); // should be 3",
+                         "3\n");
+                         
+    run_interpreter_test("Comments: commenting out code",
+                         "// var x = 10;\n"
+                         "var x = 5;\n"
+                         "/* println(99); */\n"
+                         "println(x);",
+                         "5\n");
+                         
+    run_interpreter_test("Comments: unclosed multi-line comment",
+                         "println(123); /* this is an unclosed comment\n"
+                         "println(456); // this should be eaten by the comment",
+                         "123\n");
+                         
+    run_interpreter_test("Comments: mixed and adjacent",
+                         "println(1);/*one*///two\n"
+                         "println(2);",
+                         "1\n2\n");
+}
+
+
 /*── Run all tests ───────────────────────────────────────────────────────*/
 static void run_all_tests() {
     printf("PrattLib Comprehensive Test Suite\n");
@@ -1894,7 +1958,8 @@ static void run_all_tests() {
     test_left_associativity_subtraction();
     
     // Grouping tests
-    test_nested_parentheses();
+    test_nested_parentheses_1();
+    test_nested_parentheses_2();
     test_multiple_groupings();
     
     // Complex expression tests
@@ -1913,7 +1978,13 @@ static void run_all_tests() {
     test_whitespace_handling();
     test_no_whitespace();
     
+    printf("\nComment Handling Tests\n");
+    printf("--------------------------\n");
+    test_comment_handling();
+
     // Error handling tests
+    printf("\nError Handling Tests\n");
+    printf("----------------------\n");
     test_empty_input();
     test_incomplete_expression();
     test_unmatched_parentheses();
