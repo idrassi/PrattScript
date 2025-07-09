@@ -44,6 +44,8 @@
 #include <stdarg.h>
 #include <inttypes.h>
 #include <errno.h>
+#include <time.h>
+#include <stdlib.h>
 
 // Forward declare since they are mutually recursive
 ExecResult eval(Interpreter *interp, ASTNode *node);
@@ -703,6 +705,24 @@ void runtime_error(Interpreter *interp, const char *format, ...) {
 // --- Standard Built-in Functions ---
 typedef struct { const char* name; BuiltinFn fn; } BuiltinDef;
 
+
+static Value builtin_typeof(Interpreter*, size_t, Value*);
+static Value builtin_clock(Interpreter*, size_t, Value*);
+static Value builtin_exit(Interpreter*, size_t, Value*);
+static Value builtin_assert(Interpreter*, size_t, Value*);
+// Math object functions
+static Value builtin_math_abs(Interpreter*, size_t, Value*);
+static Value builtin_math_floor(Interpreter*, size_t, Value*);
+static Value builtin_math_ceil(Interpreter*, size_t, Value*);
+static Value builtin_math_pow(Interpreter*, size_t, Value*);
+static Value builtin_math_random(Interpreter*, size_t, Value*);
+// String object functions
+static Value builtin_string_split(Interpreter*, size_t, Value*);
+static Value builtin_string_trim(Interpreter*, size_t, Value*);
+// Array object functions
+static Value builtin_array_slice(Interpreter*, size_t, Value*);
+static Value builtin_array_join(Interpreter*, size_t, Value*);
+
 // Forward declare all built-in functions
 static Value builtin_print(Interpreter*, size_t, Value*);
 static Value builtin_println(Interpreter*, size_t, Value*);
@@ -733,6 +753,10 @@ static BuiltinDef builtins[] = {
     {"keys",    builtin_keys},
     {"toString", builtin_toString},
     {"toNumber", builtin_toNumber},
+    {"typeof",  builtin_typeof},
+    {"clock",   builtin_clock},
+    {"exit",    builtin_exit},
+    {"assert",  builtin_assert},
     {NULL, NULL}
 };
 
@@ -754,12 +778,18 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     arena_init(&interp->arena, initial_arena_size);
     interner_init(&interp->interner);
 
+    // --- Seed random number generator ---
+    srand((unsigned int)time(NULL));
+
     // Create the global environment. It's an object now.
     interp->env = new_env_obj(interp, NULL);
     if (interp->env == NULL) { // Check for allocation failure
         runtime_error(interp, "Out of memory initializing interpreter.");
         return;
     }
+    
+    // --- Push env to root stack during initialization ---
+    push_root(interp, (Obj*)interp->env);
 
     for (int i = 0; builtins[i].name != NULL; i++) {
         ObjString* name = interpreter_intern_string(interp, builtins[i].name, strlen(builtins[i].name));
@@ -784,7 +814,37 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     ObjString* gc_name = interpreter_intern_string(interp, "gc", 2);
     env_define(interp, interp->env, gc_name, make_obj((Obj*)gc_object));
 
-    pop_root(interp); // Un-root the gc object; it's now rooted by the global env.
+    pop_root(interp);  // Un-root the gc object; it's now rooted by the global env.
+
+    // --- Math Built-in Object ---
+    ObjObject* math_object = new_object(interp);
+    push_root(interp, (Obj*)math_object);
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "abs", 3), make_builtin(builtin_math_abs));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "floor", 5), make_builtin(builtin_math_floor));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "ceil", 4), make_builtin(builtin_math_ceil));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "pow", 3), make_builtin(builtin_math_pow));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "random", 6), make_builtin(builtin_math_random));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "math", 4), make_obj((Obj*)math_object));
+    pop_root(interp);
+
+    // --- String Built-in Object ---
+    ObjObject* string_object = new_object(interp);
+    push_root(interp, (Obj*)string_object);
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "split", 5), make_builtin(builtin_string_split));
+    map_set(interp, &string_object->map, interpreter_intern_string(interp, "trim", 4), make_builtin(builtin_string_trim));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "string", 6), make_obj((Obj*)string_object));
+    pop_root(interp);
+
+    // --- Array Built-in Object ---
+    ObjObject* array_object = new_object(interp);
+    push_root(interp, (Obj*)array_object);
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "slice", 5), make_builtin(builtin_array_slice));
+    map_set(interp, &array_object->map, interpreter_intern_string(interp, "join", 4), make_builtin(builtin_array_join));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "array", 5), make_obj((Obj*)array_object));
+    pop_root(interp);
+    
+    // --- Pop env, now that it's fully populated ---
+    pop_root(interp); 
 }
 
 void interpreter_destroy(Interpreter *interp) {
@@ -950,16 +1010,16 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                      ObjArray* arr = AS_ARRAY(col_res.value);
                      int64_t idx;
                      if (IS_INT(idx_res.value)) { idx = AS_INT(idx_res.value); }
-                     else { runtime_error(interp, "Array index must be an integer for assignment."); return ERROR_RESULT(); }
+                     else { runtime_error(interp, "Array index must be an integer for assignment."); if (IS_OBJ(value_res.value)) pop_root(interp); return ERROR_RESULT(); }
 
-                     if (idx < 0 || (size_t)idx >= arr->count) { runtime_error(interp, "Array index out of bounds for assignment."); return ERROR_RESULT(); }
+                     if (idx < 0 || (size_t)idx >= arr->count) { runtime_error(interp, "Array index out of bounds for assignment."); if (IS_OBJ(value_res.value)) pop_root(interp); return ERROR_RESULT(); }
                     arr->values[(size_t)idx] = value_res.value;
                 } else if (IS_OBJECT(col_res.value)) {
-                     if (!IS_STRING(idx_res.value)) { runtime_error(interp, "Object key must be a string."); return ERROR_RESULT(); }
+                     if (!IS_STRING(idx_res.value)) { runtime_error(interp, "Object key must be a string."); if (IS_OBJ(value_res.value)) pop_root(interp); return ERROR_RESULT(); }
                      ObjString* key = AS_STRING(idx_res.value);
                      map_set(interp, &AS_OBJECT(col_res.value)->map, key, value_res.value);
                 } else {
-                    runtime_error(interp, "Can only assign to elements of arrays and objects."); return ERROR_RESULT();
+                    runtime_error(interp, "Can only assign to elements of arrays and objects."); if (IS_OBJ(value_res.value)) pop_root(interp); return ERROR_RESULT();
                 }
                 if (IS_OBJ(value_res.value)) pop_root(interp);
             } else {
@@ -1258,6 +1318,9 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
         case ST_EXPR: {
             ExecResult res = eval(interp, stmt->as.expr.expr);
             if (res.status != EXEC_OK) return res;
+            // The result of an expression statement is discarded, so we return nil.
+            // This prevents values from printing implicitly in the REPL.
+            // If we wanted implicit printing, we would return res.value here.
             return OK_RESULT(make_nil());
         }
         case ST_VAR: {
@@ -1736,4 +1799,264 @@ static Value builtin_gc_next_gc(Interpreter *interp, size_t argc, Value *args) {
         return make_nil();
     }
     return make_int((int64_t)interp->next_gc);
+}
+
+
+static Value builtin_typeof(Interpreter *interp, size_t argc, Value* args) {
+    if (argc != 1) {
+        runtime_error(interp, "typeof() expects 1 argument, but got %zu.", argc);
+        return make_nil();
+    }
+    const char* type_str;
+    switch(args[0].type) {
+        case VAL_BOOL:    type_str = "boolean"; break;
+        case VAL_NIL:     type_str = "nil"; break;
+        case VAL_INT:
+        case VAL_DOUBLE:  type_str = "number"; break;
+        case VAL_BUILTIN: type_str = "builtin"; break;
+        case VAL_OBJ:
+            switch(OBJ_TYPE(args[0])) {
+                case OBJ_STRING:   type_str = "string"; break;
+                case OBJ_FUNCTION: type_str = "function"; break;
+                case OBJ_ARRAY:    type_str = "array"; break;
+                case OBJ_OBJECT:   type_str = "object"; break;
+                case OBJ_ENV:      type_str = "environment"; break;
+                default:           type_str = "unknown_object"; break;
+            }
+            break;
+        default: type_str = "unknown"; break;
+    }
+    return make_obj((Obj*)make_heap_string(interp, type_str, strlen(type_str)));
+}
+
+static Value builtin_clock(Interpreter *interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "clock() expects 0 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    return make_double((double)clock() / CLOCKS_PER_SEC);
+}
+
+static Value builtin_exit(Interpreter *interp, size_t argc, Value* args) {
+    if (argc > 1) {
+        runtime_error(interp, "exit() expects 0 or 1 argument, but got %zu.", argc);
+        return make_nil();
+    }
+    int code = 0;
+    if (argc == 1) {
+        if (!IS_INT(args[0])) {
+            runtime_error(interp, "exit() argument must be an integer exit code.");
+            return make_nil();
+        }
+        code = (int)AS_INT(args[0]);
+    }
+    exit(code);
+    return make_nil(); // Unreachable, but pleases the compiler.
+}
+
+static Value builtin_assert(Interpreter *interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2) {
+        runtime_error(interp, "assert() expects 1 or 2 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    if (!is_truthy(args[0])) {
+        const char* message = "Assertion failed.";
+        if (argc == 2 && IS_STRING(args[1])) {
+            message = AS_CSTRING(args[1]);
+        }
+        runtime_error(interp, message);
+        return make_nil();
+    }
+    return make_nil();
+}
+
+static Value builtin_math_abs(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.abs() expects 1 number argument.");
+        return make_nil();
+    }
+    if (IS_INT(args[0])) return make_int(llabs(AS_INT(args[0])));
+    return make_double(fabs(AS_DOUBLE(args[0])));
+}
+
+static Value builtin_math_floor(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.floor() expects 1 number argument.");
+        return make_nil();
+    }
+    return make_double(floor(AS_NUMBER(args[0])));
+}
+
+static Value builtin_math_ceil(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_NUMERIC(args[0])) {
+        runtime_error(interp, "math.ceil() expects 1 number argument.");
+        return make_nil();
+    }
+    return make_double(ceil(AS_NUMBER(args[0])));
+}
+
+static Value builtin_math_pow(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_NUMERIC(args[0]) || !IS_NUMERIC(args[1])) {
+        runtime_error(interp, "math.pow() expects 2 number arguments.");
+        return make_nil();
+    }
+    return make_double(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+}
+
+static Value builtin_math_random(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "math.random() expects 0 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    return make_double((double)rand() / (RAND_MAX + 1.0));
+}
+
+static Value builtin_string_split(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "string.split() expects a string to split and a separator string.");
+        return make_nil();
+    }
+    ObjString* str = AS_STRING(args[0]);
+    ObjString* sep = AS_STRING(args[1]);
+
+    ObjArray* result_array = new_array(interp);
+    push_root(interp, (Obj*)result_array); // Protect array from GC
+
+    if (sep->length == 0) { // Split into characters
+        for (size_t i = 0; i < str->length; i++) {
+            array_write(interp, result_array, make_obj((Obj*)make_heap_string(interp, &str->chars[i], 1)));
+        }
+    } else {
+        const char* start = str->chars;
+        const char* found;
+        while ((found = strstr(start, sep->chars)) != NULL) {
+            array_write(interp, result_array, make_obj((Obj*)make_heap_string(interp, start, found - start)));
+            start = found + sep->length;
+        }
+        array_write(interp, result_array, make_obj((Obj*)make_heap_string(interp, start, strlen(start))));
+    }
+    
+    pop_root(interp);
+    return make_obj((Obj*)result_array);
+}
+
+static Value builtin_string_trim(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "string.trim() expects 1 string argument.");
+        return make_nil();
+    }
+    ObjString* str = AS_STRING(args[0]);
+    
+    const char* start = str->chars;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+
+    if (*start == '\0') { // String is all whitespace
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+
+    const char* end = str->chars + str->length - 1;
+    while (end > start && isspace((unsigned char)*end)) {
+        end--;
+    }
+    
+    size_t new_len = end - start + 1;
+    return make_obj((Obj*)make_heap_string(interp, start, new_len));
+}
+
+static Value builtin_array_slice(Interpreter* interp, size_t argc, Value* args) {
+    if ((argc != 2 && argc != 3) || !IS_ARRAY(args[0]) || !IS_INT(args[1]) || (argc == 3 && !IS_INT(args[2]))) {
+        runtime_error(interp, "array.slice(array, start, [end]) expects an array and integer indices.");
+        return make_nil();
+    }
+    ObjArray* src_array = AS_ARRAY(args[0]);
+    int64_t start = AS_INT(args[1]);
+    int64_t end = src_array->count;
+    if (argc == 3) {
+        end = AS_INT(args[2]);
+    }
+
+    // Handle negative indices
+    if (start < 0) start = src_array->count + start;
+    if (end < 0) end = src_array->count + end;
+
+    // Clamp to bounds
+    if (start < 0) start = 0;
+    if (end > src_array->count) end = src_array->count;
+    if (start > src_array->count) start = src_array->count;
+
+    ObjArray* result_array = new_array(interp);
+    push_root(interp, (Obj*)result_array);
+
+    if (start < end) {
+        for (int64_t i = start; i < end; i++) {
+            array_write(interp, result_array, src_array->values[i]);
+        }
+    }
+    
+    pop_root(interp);
+    return make_obj((Obj*)result_array);
+}
+
+static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
+    if ((argc != 1 && argc != 2) || !IS_ARRAY(args[0]) || (argc == 2 && !IS_STRING(args[1]))) {
+        runtime_error(interp, "array.join(array, [separator]) expects an array and an optional string separator.");
+        return make_nil();
+    }
+    ObjArray* array = AS_ARRAY(args[0]);
+    ObjString* separator = (argc == 2) ? AS_STRING(args[1]) : NULL;
+    size_t sep_len = (separator != NULL) ? separator->length : 0;
+    
+    if (array->count == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+    
+    // --- Phase 1: Convert all elements to strings and calculate total length ---
+    // We must protect these new strings from GC.
+    ObjString** strings = PRATT_MALLOC(sizeof(ObjString*) * array->count);
+    if (!strings) { runtime_error(interp, "Out of memory."); return make_nil(); }
+    
+    size_t total_len = 0;
+    for (int i = 0; i < array->count; i++) {
+        // value_to_string might trigger GC, so we must protect all previously created strings.
+        // A simpler but less efficient way is to just root the values themselves.
+        if (IS_OBJ(array->values[i])) push_root(interp, AS_OBJ(array->values[i]));
+        strings[i] = value_to_string(interp, array->values[i]);
+        if (IS_OBJ(array->values[i])) pop_root(interp);
+
+        push_root(interp, (Obj*)strings[i]); // Protect this new string
+        total_len += strings[i]->length;
+    }
+    if (array->count > 1) {
+        total_len += sep_len * (array->count - 1);
+    }
+    
+    // --- Phase 2: Build the final string ---
+    char* result_chars = PRATT_MALLOC(total_len + 1);
+    if (!result_chars) {
+        for(int i=0; i < array->count; i++) pop_root(interp);
+        PRATT_FREE(strings);
+        runtime_error(interp, "Out of memory.");
+        return make_nil();
+    }
+    
+    char* p = result_chars;
+    for (int i = 0; i < array->count; i++) {
+        memcpy(p, strings[i]->chars, strings[i]->length);
+        p += strings[i]->length;
+        if (separator != NULL && i < array->count - 1) {
+            memcpy(p, separator->chars, sep_len);
+            p += sep_len;
+        }
+    }
+    *p = '\0';
+    
+    // --- Phase 3: Clean up and return ---
+    for(int i=0; i < array->count; i++) pop_root(interp); // Pop all the strings we rooted
+    PRATT_FREE(strings);
+    
+    ObjString* result_str = make_heap_string(interp, result_chars, total_len);
+    PRATT_FREE(result_chars);
+    return make_obj((Obj*)result_str);
 }

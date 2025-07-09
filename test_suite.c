@@ -1881,9 +1881,9 @@ static void test_gc_simple_collection() {
         "  var a = upper(\"some temporary string\");"
         "}"
         // 'a' is now out of scope and the temporary string should be unreachable.
-        "var before = gc[\"allocated\"]();"
-        "gc[\"collect\"]();"
-        "var after = gc[\"allocated\"]();"
+        "var before = gc.allocated();"
+        "gc.collect();"
+        "var after = gc.allocated();"
         // The memory used by the temporary string should have been reclaimed.
         "println(before > after);";
     run_interpreter_test("GC: Simple collection", source, "true\n");
@@ -1897,7 +1897,7 @@ static void test_gc_global_root() {
         "  g = a;"           // Put it in a global root.
         "}"
         // 'a' is out of scope, but 'g' should keep the array alive.
-        "gc[\"collect\"]();"
+        "gc.collect();"
         // Accessing it after GC proves it's still alive and correct.
         "println(g[1]);";
     run_interpreter_test("GC: Global variable keeps object alive", source, "20\n");
@@ -1905,14 +1905,14 @@ static void test_gc_global_root() {
 
 static void test_gc_array_root() {
     run_gc_test("GC: Array keeps its elements alive",
-        "var g = [[]]; gc[\"collect\"]();",
+        "var g = [[]]; gc.collect();",
         NULL // Just check it runs without error
     );
 }
 
 static void test_gc_object_root() {
     run_gc_test("GC: Object keeps its values alive",
-        "var g = {key: {}}; gc[\"collect\"]();",
+        "var g = {key: {}}; gc.collect();",
         NULL // Just check it runs without error
     );
 }
@@ -1925,7 +1925,7 @@ static void test_gc_closure_root() {
         "  function closure() { println(len(local)); }"
         "  g = closure;"
         "}" // local goes out of scope, but should be kept alive by closure
-        "gc[\"collect\"]();"
+        "gc.collect();"
         "g();"; // If 'local' was collected, this would crash or error.
     run_interpreter_test("GC: Closure keeps captured variables alive", source, "3\n");
 }
@@ -1940,9 +1940,9 @@ static void test_gc_cyclic_reference() {
         "  a[key_a] = b;"
         "  b[key_b] = a;"
         "}" // a and b are now unreachable from roots, but point to each other.
-        "var before = gc[\"allocated\"]();"
-        "gc[\"collect\"]();"
-        "var after = gc[\"allocated\"]();"
+        "var before = gc.allocated();"
+        "gc.collect();"
+        "var after = gc.allocated();"
         // The memory for objects 'a' and 'b' should have been reclaimed.
         "println(before > after);";
     run_interpreter_test("GC: Collects cyclic references", source, "true\n");
@@ -1957,12 +1957,12 @@ static void test_gc_temporary_rooting_in_expression() {
 static void test_gc_builtins() {
     const char* source =
         "var a = { \"key\": \"value\"};"
-        "var allocated_before = gc[\"allocated\"]();"
-        "gc[\"collect\"]();"
-        "var allocated_after = gc[\"allocated\"]();"
+        "var allocated_before = gc.allocated();"
+        "gc.collect();"
+        "var allocated_after = gc.allocated();"
         "println(allocated_before > 0);"
         "println(allocated_after > 0);"
-        "println(gc[\"next_gc\"]() > allocated_after);";
+        "println(gc.next_gc() > allocated_after);";
     const char* expected = "true\ntrue\ntrue\n";
     run_interpreter_test("GC: Built-in functions work", source, expected);
 }
@@ -1994,7 +1994,7 @@ static void test_gc_long_chain() {
         "}"
         // At this point, `head` is the root of a 1000-element linked list.
         // A manual GC call here will test if the marker can trace the whole chain.
-        "gc[\"collect\"]();"
+        "gc.collect();"
         "println(\"long chain survived GC\");";
 
     const char* expected = "long chain survived GC\n";
@@ -2022,10 +2022,10 @@ static void test_gc_graph_collection() {
         "  push(dictator, { \"id\": i });" // Create many objects held by one
         "  i = i + 1;"
         "}"
-        "var mem_before = gc[\"allocated\"]();"
+        "var mem_before = gc.allocated();"
         "dictator = nil;" // Abdicate! The entire object graph is now garbage.
-        "gc[\"collect\"]();"
-        "var mem_after = gc[\"allocated\"]();"
+        "gc.collect();"
+        "var mem_after = gc.allocated();"
         // Most, but not all, memory should be freed (interned strings, etc remain).
         // We expect a significant drop.
         "println(mem_before > mem_after * 2);"; // Check for substantial reduction
@@ -2042,7 +2042,7 @@ static void test_gc_closure_complex_root() {
         "  function get_obj() { return big_obj; }"
         "  my_closure = get_obj;"
         "}" // big_obj is out of scope here
-        "gc[\"collect\"]();" // Should not collect big_obj
+        "gc.collect();" // Should not collect big_obj
         "var result = my_closure();"
         "println(len(result[\"data\"]));"; // Access after GC
     const char* expected = "100\n";
@@ -2136,8 +2136,6 @@ static void test_print_cycle_detection() {
         "[1, [...]]\n"
     );
 
-    // Note: Object key printing order depends on the hash map implementation.
-    // This test assumes a specific, stable order for "k" and "self".
     run_interpreter_test(
         "Print: Simple Object Cycle",
         "var o = {\"k\": \"v\"}; o[\"self\"] = o; println(o);",
@@ -2170,7 +2168,7 @@ static void test_print_cycle_detection() {
     
     run_interpreter_test(
         "Print: Deeper cycle in object",
-        "var o = { a: { b: {} } }; o[\"a\"][\"b\"][\"c\"] = o; println(o);",
+        "var o = { a: { b: {} } }; o.a.b.c = o; println(o);",
         "{\"a\": {\"b\": {\"c\": {...}}}}\n"
     );
 }
@@ -2257,6 +2255,94 @@ static void run_continue_tests() {
     test_simple_continue();
     test_nested_continue();
     test_continue_and_break();
+}
+
+
+static void run_extra_builtin_tests() {
+    run_interpreter_test("Builtin: typeof",
+        "println(typeof(123));"
+        "println(typeof(1.5));"
+        "println(typeof(\"hi\"));"
+        "println(typeof(true));"
+        "println(typeof(nil));"
+        "println(typeof([]));"
+        "println(typeof({}));"
+        "function f(){} println(typeof(f));"
+        "println(typeof(println));",
+        "number\nnumber\nstring\nboolean\nnil\narray\nobject\nfunction\nbuiltin\n"
+    );
+    run_interpreter_error_test("Builtin Error: typeof wrong argc", "typeof(1, 2);", "expects 1 argument");
+
+    run_interpreter_test("Builtin: clock",
+        "println(clock() >= 0);", // Cannot test exact value, just that it's a valid number
+        "true\n"
+    );
+    run_interpreter_error_test("Builtin Error: clock wrong argc", "clock(1);", "expects 0 arguments");
+
+    run_interpreter_test("Builtin: assert success", "assert(true); assert(1); assert(\"ok\"); println(\"ok\");", "ok\n");
+    run_interpreter_error_test("Builtin Error: assert failure", "assert(false);", "Assertion failed.");
+    run_interpreter_error_test("Builtin Error: assert failure with message", "assert(0, \"it was zero\");", "it was zero");
+    run_interpreter_error_test("Builtin Error: assert wrong argc", "assert();", "expects 1 or 2 arguments");
+
+    run_interpreter_error_test("Builtin Error: exit wrong type", "exit(\"die\");", "must be an integer");
+    run_interpreter_error_test("Builtin Error: exit wrong argc", "exit(0, 1);", "expects 0 or 1 argument");
+
+    run_interpreter_test("Builtin: math.abs",
+        "println(math.abs(5));"
+        "println(math.abs(-5));"
+        "println(math.abs(-3.14));",
+        "5\n5\n3.14\n"
+    );
+    run_interpreter_error_test("Builtin Error: math.abs wrong type", "math.abs(\"hi\");", "expects 1 number argument");
+
+    run_interpreter_test("Builtin: math.floor", "println(math.floor(3.9)); println(math.floor(-3.9));", "3\n-4\n");
+    run_interpreter_error_test("Builtin Error: math.floor wrong argc", "math.floor();", "expects 1 number argument");
+
+    run_interpreter_test("Builtin: math.ceil", "println(math.ceil(3.1)); println(math.ceil(-3.1));", "4\n-3\n");
+    run_interpreter_error_test("Builtin Error: math.ceil wrong type", "math.ceil([]);", "expects 1 number argument");
+
+    run_interpreter_test("Builtin: math.pow", "println(math.pow(2, 3)); println(math.pow(4, 0.5));", "8\n2\n");
+    run_interpreter_error_test("Builtin Error: math.pow wrong argc", "math.pow(2);", "expects 2 number arguments");
+
+    run_interpreter_test("Builtin: math.random", "var r = math.random(); println(r >= 0 && r < 1);", "true\n");
+
+    run_interpreter_test("Builtin: string.trim",
+        "println(string.trim(\"  hello  \"));"
+        "println(string.trim(\"no-space\"));"
+        "println(string.trim(\"   \"));",
+        "hello\nno-space\n\n"
+    );
+    run_interpreter_error_test("Builtin Error: string.trim wrong type", "string.trim(123);", "expects 1 string argument");
+
+    run_interpreter_test("Builtin: string.split",
+        "println(string.split(\"a,b,c\", \",\"));"
+        "println(string.split(\"hello\", \"\"));"
+        "println(string.split(\"a, b,c\", \", \"));"
+        "println(string.split(\"only one\", \",\"));",
+        "[a, b, c]\n[h, e, l, l, o]\n[a, b,c]\n[only one]\n"
+    );
+    run_interpreter_error_test("Builtin Error: string.split wrong argc", "string.split(\"a\");", "expects a string to split and a separator");
+
+    run_interpreter_test("Builtin: array.slice",
+        "var a = [0, 1, 2, 3, 4];"
+        "println(array.slice(a, 1, 3));" // [1, 2]
+        "println(array.slice(a, 2));"    // [2, 3, 4]
+        "println(array.slice(a, -2));"   // [3, 4]
+        "println(array.slice(a, 1, -1));"// [1, 2, 3]
+        "println(array.slice(a, 5, 10));"// []
+        "println(array.slice(a, 3, 2));",// []
+        "[1, 2]\n[2, 3, 4]\n[3, 4]\n[1, 2, 3]\n[]\n[]\n"
+    );
+    run_interpreter_error_test("Builtin Error: array.slice wrong type", "array.slice({}, 0);", "expects an array");
+
+    run_interpreter_test("Builtin: array.join",
+        "var a = [1, \"two\", true];"
+        "println(array.join(a));"
+        "println(array.join(a, \", \"));"
+        "println(array.join([]));",
+        "1twotrue\n1, two, true\n\n"
+    );
+    run_interpreter_error_test("Builtin Error: array.join wrong sep", "array.join([], 1);", "optional string separator");
 }
 
 /*── Run all tests ───────────────────────────────────────────────────────*/
@@ -2447,6 +2533,10 @@ static void run_all_tests() {
     test_for_loop_scoping();
     test_for_loop_break();
     test_for_loop_continue();
+
+    printf("\nExtra Builtin Function Tests\n");
+    printf("----------------------------\n");
+    run_extra_builtin_tests();
 
     // Summary
     printf("\n==================================\n");
