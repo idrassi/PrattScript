@@ -2111,7 +2111,7 @@ static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
         push_root(interp, (Obj*)strings[i]); // Protect this new string
         total_len += strings[i]->length;
     }
-    if (array->count > 1) {
+    if (array->count > 1 && separator != NULL) {
         total_len += sep_len * (array->count - 1);
     }
     
