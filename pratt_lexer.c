@@ -47,6 +47,7 @@ static Keyword keywords[] = {
     {"break",  T_BREAK},
     {"continue", T_CONTINUE},
     {"else",   T_ELSE},
+    {"for",    T_FOR},
     {"false",  T_FALSE},
     {"function", T_FUNCTION},
     {"if",     T_IF},

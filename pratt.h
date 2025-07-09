@@ -70,7 +70,7 @@ typedef Token (*LexFn)(void *ctx);
 /*── AST node definitions ─────────────────────────────────────────────────*/
 typedef struct ASTNode ASTNode;
 typedef enum {
-    AST_NUMBER, AST_STRING, AST_IDENT, AST_BINARY, AST_UNARY, AST_TERNARY,
+    AST_NUMBER, AST_STRING, AST_IDENT, AST_BINARY, AST_UNARY, AST_TERNARY, AST_ASSIGN,
     AST_CALL, AST_ARRAY, AST_OBJECT, AST_INDEX,
     AST_BOOL, AST_NIL, /* Special AST nodes for literals */
 } ASTNodeType;
@@ -96,6 +96,7 @@ typedef struct { ASTNode *callee; ASTNode **args; size_t argc; Token rparen; } A
 typedef struct { ASTNode **elements; size_t count; Token bracket; } ASTArray;
 typedef struct { const char** keys; ASTNode** values; size_t count; Token brace; } ASTObject;
 typedef struct { ASTNode *object; ASTNode *index; Token bracket; } ASTIndex;
+typedef struct { ASTNode *target; ASTNode *value; Token op; } ASTAssign;
 typedef struct { int       value;      Token tok;  } ASTBool;
 typedef struct { Token     tok;                    } ASTNil;
 
@@ -106,6 +107,7 @@ struct ASTNode {
         ASTBinary binary;
         ASTUnary  unary;
         ASTTernary ternary;
+        ASTAssign assign;
         ASTNumber number;
         ASTString string;
         ASTIdent  ident;
@@ -121,21 +123,25 @@ struct ASTNode {
 
 /*── Statement node definitions ───────────────────────────────────────────*/
 typedef struct Statement Statement;
-typedef enum { ST_EXPR, ST_VAR, ST_ASSIGN, ST_BLOCK, ST_BREAK, ST_CONTINUE,
-               ST_IF,  ST_WHILE, ST_RETURN, ST_FUNCTION } StatementType;
+typedef enum { ST_EXPR, ST_VAR, ST_BLOCK, ST_BREAK, ST_CONTINUE,
+               ST_IF,  ST_WHILE, ST_FOR, ST_RETURN, ST_FUNCTION } StatementType;
 
 struct Statement {
     StatementType type;
     union {
         // Use interned 'name' for performance. Keep token for errors.
         struct { const char *name; Token name_tok; ASTNode *initializer; } var;
-        // Target can be an AST_IDENT, AST_INDEX, etc.
-        struct { ASTNode *target; ASTNode *value; } assign;
         struct { ASTNode *expr; } expr;
         struct { ASTNode *condition; Statement *then_branch, *else_branch; } if_s;
         struct { Token keyword; } break_s;
         struct { Token keyword; } continue_s;
         struct { ASTNode *condition; Statement *body; } while_s;
+        struct {
+            Statement *initializer; /* A full statement (var decl or expr stmt) */
+            ASTNode   *condition;
+            ASTNode   *increment;
+            Statement *body;
+        } for_s;
         struct { Statement **list; size_t count; } block;
         struct { ASTNode *value; Token keyword; } ret;
         // Function definition statement

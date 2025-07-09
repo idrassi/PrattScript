@@ -46,7 +46,7 @@ typedef enum {
 
     /* Keywords */
     T_VAR, T_IF, T_ELSE, T_WHILE, T_RETURN, T_FUNCTION, T_BREAK,
-    T_CONTINUE,
+    T_CONTINUE, T_FOR,
     T_TRUE, T_FALSE, T_NIL,
 
     /* Operators */

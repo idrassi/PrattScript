@@ -396,7 +396,9 @@ static ASTNode *default_call_infix(Parser *p, ASTNode *callee) {
                 if (args) memcpy(new_args, args, old_capacity * sizeof(ASTNode *));
                 args = new_args;
             }
-            ASTNode *arg = parse_precedence(p, PREC_ASSIGNMENT); // Can't have comma operator in args
+            // Parse a full expression for the argument. The lowest precedence (PREC_NONE)
+            // is required to allow expressions like `x = 5` as arguments.
+            ASTNode *arg = parse_precedence(p, PREC_NONE);
             if (!arg) return NULL;
             args[argc++] = arg;
         } while (check(p, T_COMMA) && (advance(p), 1));
@@ -434,6 +436,26 @@ ASTNode *default_index_infix(Parser *p, ASTNode *object) {
     return n;
 }
 
+/*── infix: assignment - target = value ──────────────────────────────────*/
+ASTNode *default_assignment_infix(Parser *p, ASTNode *left) {
+    // The left-hand side must be a valid l-value (e.g., identifier, index)
+    if (left->type != AST_IDENT && left->type != AST_INDEX) {
+        parser_error(p, "Invalid assignment target.");
+        return NULL;
+    }
+
+    Token op = p->cur; // The '=' token
+    // Assignment is right-associative, so we parse with a slightly lower precedence
+    ASTNode *value = parse_precedence(p, PREC_ASSIGNMENT - 1);
+   if (!value) return NULL;
+
+    ASTNode *n = new_node(p, AST_ASSIGN);
+    if (!n) return NULL;
+    n->as.assign.target = left;
+    n->as.assign.value = value;
+    n->as.assign.op = op;
+    return n;
+}
 
 /*── Helpers to allocate Statement nodes in arena ───────────────────────*/
 static Statement *new_statement(Parser *p, StatementType type) {
@@ -469,6 +491,10 @@ static Statement *continue_statement(Parser *p) {
 }
 
 /*── If Statement: 'if' '(' condition ')' then ('else' else)? ───────────*/
+/* Forward declarations for statement parsers */
+static Statement *for_statement(Parser *p);
+static Statement *declaration(Parser *p);
+static Statement *expression_statement(Parser *p);
 static Statement *if_statement(Parser *p) {
     advance(p); // consume 'if'
     if (!consume(p, T_LPAREN, "'(' after 'if'")) return NULL;
@@ -512,6 +538,54 @@ static Statement *while_statement(Parser *p) {
     return s;
 }
 
+/*── For Statement: 'for' '(' (varDecl | exprStmt | ';') condition? ';' increment? ')' body --*/
+static Statement *for_statement(Parser *p) {
+    advance(p); // consume 'for'
+
+    if (!consume(p, T_LPAREN, "'(' after 'for'")) return NULL;
+
+    // 1. Initializer Clause
+    Statement* initializer = NULL;
+    if (check(p, T_SEMICOLON)) {
+        // Empty initializer, just consume the semicolon
+        advance(p);
+    } else if (check(p, T_VAR)) {
+        // A full variable declaration statement (which consumes its own ';')
+        initializer = declaration(p);
+    } else { // It's an expression statement.
+        initializer = expression_statement(p);
+    }
+    // The initializer parsers above consume their own semicolon, so we don't.
+    if (p->had_error) return NULL; 
+
+    // 2. Condition Clause
+    ASTNode* condition = NULL;
+    if (!check(p, T_SEMICOLON)) {
+        condition = parse_precedence(p, PREC_NONE);
+    }
+    if (!consume(p, T_SEMICOLON, "';' after loop condition")) return NULL;
+    if (p->had_error) return NULL;
+    // 3. Increment Clause
+    ASTNode* increment = NULL;
+    if (!check(p, T_RPAREN)) {
+        increment = parse_precedence(p, PREC_NONE);
+    }
+    if (!consume(p, T_RPAREN, "')' after for clauses")) return NULL;
+    if (p->had_error) return NULL;
+
+    // 4. Body
+    Statement* body = parse_statement(p);
+    if (!body) return NULL;
+
+    Statement* s = new_statement(p, ST_FOR);
+    if (!s) return NULL;
+    s->as.for_s.initializer = initializer;
+    s->as.for_s.condition = condition;
+    s->as.for_s.increment = increment;
+    s->as.for_s.body = body;
+    return s;
+}
+
 /*── Return Statement: 'return' expression? ';' ─────────────────────────*/
 static Statement *return_statement(Parser *p) {
     Token keyword = p->next;
@@ -533,38 +607,11 @@ static Statement *return_statement(Parser *p) {
 
 /*── Expression Statement: (l-value '=' expression)? | expression ';' ───*/
 static Statement *expression_statement(Parser *p) {
-    // An expression statement can be a simple expression or an assignment.
-    // Parse the potential left-hand side first.
-    ASTNode *expr = parse_precedence(p, PREC_ASSIGNMENT);
+    // An expression statement is simply an expression followed by a semicolon.
+    // Since assignment is now a proper expression, this handles both cases.
+    ASTNode *expr = parse_precedence(p, PREC_NONE);
     if (!expr) return NULL;
 
-    // If an '=' follows, it's an assignment.
-    if (check(p, T_EQUAL)) {
-        // The left-hand side of an assignment must be a valid l-value.
-        // In our language, this is an identifier or an index expression.
-        if (expr->type != AST_IDENT && expr->type != AST_INDEX) {
-            parser_error(p, "Invalid assignment target.");
-            // NOTE: The 'expr' node will be freed when the parser arena is destroyed.
-            // No need to free it manually here.
-            return NULL;
-        }
-
-        advance(p); // Consume the '='
-
-        // Parse the right-hand side. Assignment is right-associative.
-        ASTNode *value = parse_precedence(p, PREC_ASSIGNMENT - 1);
-        if (!value) return NULL;
-
-        if (!consume(p, T_SEMICOLON, "';' after assignment")) return NULL;
-
-        Statement *s = new_statement(p, ST_ASSIGN);
-        if (!s) return NULL;
-        s->as.assign.target = expr;
-        s->as.assign.value = value;
-        return s;
-    }
-
-    // If no '=' followed, it's a regular expression statement.
     if (!consume(p, T_SEMICOLON, "';' after expression")) return NULL;
 
     Statement *s = new_statement(p, ST_EXPR);
@@ -672,6 +719,7 @@ Statement *parse_statement(Parser *p) {
     if (check(p, T_CONTINUE)) return continue_statement(p);
     if (check(p, T_VAR))      return declaration(p);
     if (check(p, T_WHILE))    return while_statement(p);
+    if (check(p, T_FOR))      return for_statement(p);
     if (check(p, T_RETURN))   return return_statement(p);
     if (check(p, T_LBRACE))   return parse_block(p);
     // function keyword is a statement, not an expression prefix
@@ -731,6 +779,7 @@ const char *default_token_name(TokenType t) {
         case T_IF:        return "'if'";
         case T_ELSE:      return "'else'";
         case T_WHILE:     return "'while'";
+        case T_FOR:       return "'for'";
         case T_RETURN:    return "'return'";
         case T_BREAK:     return "'break'";
         case T_CONTINUE:  return "'continue'";
@@ -783,13 +832,14 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_IF]        = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_ELSE]      = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_WHILE]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
+    [T_FOR]       = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_RETURN]    = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_BREAK]     = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_CONTINUE]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
     [T_FUNCTION]  = PRATT_RULE(NULL, NULL, PREC_NONE, 0),
 
     // Assignment is handled by expression_statement.
-    [T_EQUAL]     = PRATT_RULE(NULL, NULL, PREC_ASSIGNMENT, 0),
+    [T_EQUAL]     = PRATT_RULE(NULL, default_assignment_infix, PREC_ASSIGNMENT, 0),
 
     [T_MINUS]     = PRATT_RULE(default_unary_prefix,    default_binary_infix, PREC_TERM,   PREC_TERM),
     [T_PLUS]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_TERM,   PREC_TERM),

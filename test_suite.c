@@ -201,6 +201,13 @@ static void print_ast_indent(ASTNode *node, int depth) {
             for (int i=0; i<depth+1; ++i) printf("  "); printf("INDEX:\n");
             print_ast_indent(node->as.index.index, depth + 2);
             break;
+        case AST_ASSIGN:
+            printf("ASSIGN(%.*s)\n", (int)node->as.assign.op.length, node->as.assign.op.start);
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("TARGET:\n");
+            print_ast_indent(node->as.assign.target, depth + 2);
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("VALUE:\n");
+            print_ast_indent(node->as.assign.value, depth + 2);
+            break;
     }
 }
 
@@ -233,13 +240,6 @@ static void print_statement_ast(Statement *stmt, int depth) {
                 print_ast_indent(stmt->as.var.initializer, depth + 1);
             }
             break;
-        case ST_ASSIGN:
-            printf("ASSIGN_STMT:\n");
-            for (int i=0; i<depth+1; ++i) printf("  "); printf("TARGET:\n");
-            print_ast_indent(stmt->as.assign.target, depth + 2);
-            for (int i=0; i<depth+1; ++i) printf("  "); printf("VALUE:\n");
-            print_ast_indent(stmt->as.assign.value, depth + 2);
-            break;
         case ST_BLOCK:
             printf("BLOCK_STMT:\n");
             print_statement_list(stmt->as.block.list, stmt->as.block.count, depth + 1);
@@ -261,6 +261,17 @@ static void print_statement_ast(Statement *stmt, int depth) {
             print_ast_indent(stmt->as.while_s.condition, depth+2);
             for (int i=0; i<depth+1; ++i) printf("  "); printf("BODY:\n");
             print_statement_ast(stmt->as.while_s.body, depth+2);
+            break;
+        case ST_FOR:
+            printf("FOR_STMT:\n");
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("INIT:\n");
+            print_statement_ast(stmt->as.for_s.initializer, depth+2);
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("COND:\n");
+            print_ast_indent(stmt->as.for_s.condition, depth+2);
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("INCR:\n");
+            print_ast_indent(stmt->as.for_s.increment, depth+2);
+            for (int i=0; i<depth+1; ++i) printf("  "); printf("BODY:\n");
+            print_statement_ast(stmt->as.for_s.body, depth+2);
             break;
         case ST_BREAK:
             printf("BREAK_STMT\n");
@@ -1183,10 +1194,10 @@ static void test_if_else_nesting() {
     ASSERT(if_stmt->as.if_s.condition->type == AST_BINARY, "Condition should be binary expr");
 
     ASSERT(if_stmt->as.if_s.then_branch, "If should have a then branch");
-    ASSERT(if_stmt->as.if_s.then_branch->type == ST_ASSIGN, "Then branch should be assignment");
+    ASSERT(if_stmt->as.if_s.then_branch->type == ST_EXPR, "Then branch should be an expression statement");
 
     ASSERT(if_stmt->as.if_s.else_branch, "If should have an else branch");
-    ASSERT(if_stmt->as.if_s.else_branch->type == ST_ASSIGN, "Else branch should be assignment");
+    ASSERT(if_stmt->as.if_s.else_branch->type == ST_EXPR, "Else branch should be an expression statement");
 
     parser_destroy(&p);
     interpreter_destroy(&interp);
@@ -1444,6 +1455,13 @@ static void test_comparison_logic_objects() {
         "true\n"
         "false\n";
     run_interpreter_test("Comparison: Object reference equality", source, expected);
+}
+
+static void test_assignment_expression() {
+    const char* source =
+        "var x; var y; println(x = (y = 5)); println(x); println(y);";
+    const char* expected = "5\n5\n5\n";
+    run_interpreter_test("Interpreter: Assignment is an expression", source, expected);
 }
 
 static void test_comparison_logic_strict_typing() {
@@ -1941,6 +1959,71 @@ static void test_gc_string_concat_loop() {
     run_interpreter_test("GC: String concatenation loop", source, expected);
 }
 
+/*── For Loop Tests ───────────────────────────────────────────────────────*/
+static void test_for_loop_parsing() {
+    TEST_START("Parsing: for loop with all clauses");
+    Interpreter interp;
+    Parser p;
+    Statement *ast = parse_program_test("for (var i = 0; i < 10; i = i + 1) { println(i); }", &p, &interp);
+    ASSERT(ast && ast->type == ST_BLOCK && ast->as.block.count == 1, "Expected single for stmt in block");
+
+    Statement *for_stmt = ast->as.block.list[0];
+    ASSERT(for_stmt->type == ST_FOR, "Expected for statement");
+    ASSERT(for_stmt->as.for_s.initializer, "For should have an initializer");
+    ASSERT(for_stmt->as.for_s.initializer->type == ST_VAR, "Initializer should be a var declaration");
+    ASSERT(for_stmt->as.for_s.condition, "For should have a condition");
+    ASSERT(for_stmt->as.for_s.condition->type == AST_BINARY, "Condition should be a binary expression");
+    ASSERT(for_stmt->as.for_s.increment, "For should have an increment expression");
+    ASSERT(for_stmt->as.for_s.increment->type == AST_ASSIGN, "Increment should be an assignment expression");
+    ASSERT(for_stmt->as.for_s.body, "For should have a body");
+    ASSERT(for_stmt->as.for_s.body->type == ST_BLOCK, "Body should be a block");
+
+    parser_destroy(&p);
+    interpreter_destroy(&interp);
+    TEST_PASS();
+}
+
+static void test_for_loop_empty_clauses() {
+    TEST_START("Parsing: for loop with empty clauses");
+    Interpreter interp;
+    Parser p;
+    Statement *ast = parse_program_test("for (;;) { break; }", &p, &interp);
+    ASSERT(ast && ast->type == ST_BLOCK && ast->as.block.count == 1, "Expected single for stmt in block");
+
+    Statement *for_stmt = ast->as.block.list[0];
+    ASSERT(for_stmt->type == ST_FOR, "Expected for statement");
+   ASSERT(for_stmt->as.for_s.initializer == NULL, "Initializer should be NULL");
+    ASSERT(for_stmt->as.for_s.condition == NULL, "Condition should be NULL");
+    ASSERT(for_stmt->as.for_s.increment == NULL, "Increment should be NULL");
+
+    parser_destroy(&p);
+    interpreter_destroy(&interp);
+    TEST_PASS();
+}
+static void test_for_loop_execution() {
+    const char* source = "var total = 0; for (var i = 0; i < 5; i = i + 1) { total = total + i; } println(total);";
+    const char* expected = "10\n"; // 0+1+2+3+4
+    run_interpreter_test("For Loop: Basic execution", source, expected);
+}
+
+static void test_for_loop_scoping() {
+    const char* source = "var i = 99; for (var i = 0; i < 2; i=i+1) { println(\"inner: \" + i); } println(\"outer: \" + i);";
+   const char* expected = "inner: 0\ninner: 1\nouter: 99\n";
+    run_interpreter_test("For Loop: Variable scoping", source, expected);
+}
+
+static void test_for_loop_break() {
+    const char* source = "var total = 0; for (var i = 0; i < 10; i = i + 1) { if (i == 3) break; total = total + 1; } println(total);";
+    const char* expected = "3\n"; // 0, 1, 2
+   run_interpreter_test("For Loop: Break statement", source, expected);
+}
+
+static void test_for_loop_continue() {
+    const char* source = "var s = \"\"; for (var i = 0; i < 5; i = i + 1) { if (i == 2 || i == 4) continue; s = s + i; } println(s);";
+   const char* expected = "013\n";
+    run_interpreter_test("For Loop: Continue statement", source, expected);
+}
+
 /*── Print Cycle Detection Tests ──────────────────────────────────────────*/
 static void test_print_cycle_detection() {
     run_interpreter_test(
@@ -2181,6 +2264,7 @@ static void run_all_tests() {
     printf("\nInterpreter Execution & Control Flow Tests\n");
     printf("------------------------------------------\n");
     test_variable_shadowing();
+    test_assignment_expression();
     test_if_else_nesting();
     test_if_without_else();
     test_while_loop();
@@ -2246,6 +2330,15 @@ static void run_all_tests() {
     printf("\nPrint Cycle Detection Tests\n");
     printf("---------------------------\n");
     test_print_cycle_detection();
+
+    printf("\nFor Loop Tests\n");
+    printf("------------------\n");
+    test_for_loop_parsing();
+    test_for_loop_empty_clauses();
+    test_for_loop_execution();
+    test_for_loop_scoping();
+    test_for_loop_break();
+    test_for_loop_continue();
 
     // Summary
     printf("\n==================================\n");

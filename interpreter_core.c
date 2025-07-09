@@ -901,6 +901,55 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
             pop_root(interp);
             return OK_RESULT(make_obj((Obj*)object));
         }
+        case AST_ASSIGN: {
+            // Evaluate the right-hand side first.
+            ExecResult value_res = eval(interp, node->as.assign.value);
+            if (value_res.status != EXEC_OK) return value_res;
+
+            ASTNode *target = node->as.assign.target;
+
+            if (target->type == AST_IDENT) {
+                ObjString* name = interpreter_intern_string(interp, target->as.ident.name, strlen(target->as.ident.name));
+                if (!env_assign(interp, interp->env, name, value_res.value)) {
+                    runtime_error(interp, "Undefined variable '%s'.", target->as.ident.name);
+                    return ERROR_RESULT();
+                }
+            } else if (target->type == AST_INDEX) {
+                 // GC-Robustness: protect value during collection/index evaluation
+                if (IS_OBJ(value_res.value)) push_root(interp, AS_OBJ(value_res.value));
+
+                ExecResult col_res = eval(interp, target->as.index.object);
+                if (col_res.status != EXEC_OK) { if (IS_OBJ(value_res.value)) pop_root(interp); return col_res; }
+                
+                // GC-Robustness: protect collection during index evaluation
+                if (IS_OBJ(col_res.value)) push_root(interp, AS_OBJ(col_res.value));
+                ExecResult idx_res = eval(interp, target->as.index.index);
+                if (IS_OBJ(col_res.value)) pop_root(interp);
+
+                if (idx_res.status != EXEC_OK) { if (IS_OBJ(value_res.value)) pop_root(interp); return idx_res; }
+                if (IS_ARRAY(col_res.value)) {
+                     ObjArray* arr = AS_ARRAY(col_res.value);
+                     int64_t idx;
+                     if (IS_INT(idx_res.value)) { idx = AS_INT(idx_res.value); }
+                     else { runtime_error(interp, "Array index must be an integer for assignment."); return ERROR_RESULT(); }
+
+                     if (idx < 0 || (size_t)idx >= arr->count) { runtime_error(interp, "Array index out of bounds for assignment."); return ERROR_RESULT(); }
+                    arr->values[(size_t)idx] = value_res.value;
+                } else if (IS_OBJECT(col_res.value)) {
+                     if (!IS_STRING(idx_res.value)) { runtime_error(interp, "Object key must be a string."); return ERROR_RESULT(); }
+                     ObjString* key = AS_STRING(idx_res.value);
+                     map_set(interp, &AS_OBJECT(col_res.value)->map, key, value_res.value);
+                } else {
+                    runtime_error(interp, "Can only assign to elements of arrays and objects."); return ERROR_RESULT();
+                }
+                if (IS_OBJ(value_res.value)) pop_root(interp);
+            } else {
+                runtime_error(interp, "Invalid assignment target."); return ERROR_RESULT();
+            }
+
+            // Assignment is an expression that evaluates to the assigned value.
+           return OK_RESULT(value_res.value);
+        }
         case AST_INDEX: {
             ExecResult collection_res = eval(interp, node->as.index.object);
             if (collection_res.status != EXEC_OK) return collection_res;
@@ -1203,70 +1252,6 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
             env_define(interp, interp->env, name, initializer);
             break;
         }
-        case ST_ASSIGN: {
-            ASTNode *target = stmt->as.assign.target;
-            ExecResult value_res = eval(interp, stmt->as.assign.value);
-            if (value_res.status != EXEC_OK) return value_res;
-
-            if (target->type == AST_IDENT) {
-                ObjString* name = interpreter_intern_string(interp, target->as.ident.name, strlen(target->as.ident.name));
-                if (!env_assign(interp, interp->env, name, value_res.value)) {
-                    runtime_error(interp, "Undefined variable '%s'.", target->as.ident.name);
-                    return ERROR_RESULT();
-                }
-            } else if (target->type == AST_INDEX) {
-                // GC-Robustness: protect value during collection/index evaluation
-                if (IS_OBJ(value_res.value)) push_root(interp, AS_OBJ(value_res.value));
-
-                ExecResult col_res = eval(interp, target->as.index.object);
-                if (col_res.status != EXEC_OK) {
-                    if (IS_OBJ(value_res.value)) pop_root(interp);
-                    return col_res;
-                }
-                
-                // GC-Robustness: protect collection during index evaluation
-                if (IS_OBJ(col_res.value)) push_root(interp, AS_OBJ(col_res.value));
-                ExecResult idx_res = eval(interp, target->as.index.index);
-                if (IS_OBJ(col_res.value)) pop_root(interp);
-
-                if (idx_res.status != EXEC_OK) {
-                    if (IS_OBJ(value_res.value)) pop_root(interp);
-                    return idx_res;
-                }
-
-                if (IS_ARRAY(col_res.value)) {
-                     ObjArray* arr = AS_ARRAY(col_res.value);
-                     int64_t idx;
-                     if (IS_INT(idx_res.value)) {
-                         idx = AS_INT(idx_res.value);
-                     } else if (IS_DOUBLE(idx_res.value)) {
-                         double d_idx = AS_DOUBLE(idx_res.value);
-                         if (floor(d_idx) != d_idx) {
-                            runtime_error(interp, "Array index must be an integer for assignment."); return ERROR_RESULT();
-                         }
-                         idx = (int64_t)d_idx;
-                     } else {
-                         runtime_error(interp, "Array index must be a number for assignment."); return ERROR_RESULT();
-                     }
-
-                     if (idx < 0 || (size_t)idx >= arr->count) {
-                         runtime_error(interp, "Array index out of bounds for assignment."); return ERROR_RESULT();
-                     }
-                     arr->values[(size_t)idx] = value_res.value;
-                } else if (IS_OBJECT(col_res.value)) {
-                     if (!IS_STRING(idx_res.value)) { runtime_error(interp, "Object key must be a string."); return ERROR_RESULT(); }
-                     ObjString* key = AS_STRING(idx_res.value);
-                     map_set(interp, &AS_OBJECT(col_res.value)->map, key, value_res.value);
-                } else {
-                    runtime_error(interp, "Can only assign to elements of arrays and objects."); return ERROR_RESULT();
-                }
-
-                if (IS_OBJ(value_res.value)) pop_root(interp);
-            } else {
-                runtime_error(interp, "Invalid assignment target."); return ERROR_RESULT();
-            }
-            break;
-        }
         case ST_BLOCK: {
             // Create the new environment as a GC object, with the current env as its parent.
             ObjEnv* block_env = new_env_obj(interp, interp->env);
@@ -1303,6 +1288,63 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
                     return body_res; // Propagate EXEC_RETURN or EXEC_ERROR.
                 }
             }
+            break;
+        }
+        case ST_FOR: {
+            // A for loop introduces a new scope, primarily for variables
+            // declared in its initializer.
+            ObjEnv* for_env = new_env_obj(interp, interp->env);
+            ObjEnv* previous_env = interp->env;
+            interp->env = for_env;
+
+            // 1. Execute the initializer once.
+            if (stmt->as.for_s.initializer) {
+                // The initializer is a statement, which could be a `var` decl
+                // or an expression statement (which is just an expression).
+                // We just execute it.
+                if (stmt->as.for_s.initializer->type == ST_EXPR) {
+                    // It's a pure expression, we need to eval it.
+                    eval(interp, stmt->as.for_s.initializer->as.expr.expr);
+                } else {
+                    // It's a var declaration, execute it.
+                    execute(interp, stmt->as.for_s.initializer);
+               }
+                if (interp->had_error) {
+                     interp->env = previous_env; return ERROR_RESULT();
+                }
+            }
+
+            // 2. Loop with condition, body, and increment.
+            while (true) {
+                // 2a. Check the condition. If none is provided, it's an infinite loop (always true).
+                if (stmt->as.for_s.condition) {
+                    ExecResult cond_res = eval(interp, stmt->as.for_s.condition);
+                    if (cond_res.status != EXEC_OK) {
+                        interp->env = previous_env;
+                        return cond_res;
+                    }
+                    if (!is_truthy(cond_res.value)) {
+                        break; // Condition is false, exit the loop.
+                    }
+                }
+
+                // 2b. Execute the loop body.
+                ExecResult body_res = execute(interp, stmt->as.for_s.body);
+
+                // Handle control flow statements.
+                if (body_res.status == EXEC_BREAK)   break; // Exit the loop.
+                if (body_res.status == EXEC_RETURN) { interp->env = previous_env; return body_res; }
+                if (body_res.status == EXEC_ERROR)  { interp->env = previous_env; return body_res; }
+
+                // 2c. Execute the increment expression (if it exists) after the body.
+                // This is also executed after a 'continue'.
+                if (stmt->as.for_s.increment) {
+                    ExecResult inc_res = eval(interp, stmt->as.for_s.increment);
+                    if (inc_res.status != EXEC_OK) { interp->env = previous_env; return inc_res; }
+                }
+            }
+
+            interp->env = previous_env; // Pop the for-loop's scope.
             break;
         }
         case ST_RETURN: {
