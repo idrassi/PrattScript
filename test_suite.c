@@ -2694,6 +2694,96 @@ static void test_modulo_execution() {
     run_interpreter_error_test("Modulo Error: Non-numeric operand (right)", "5 % \"a\";", "Operands for '%' must be numbers.");
 }
 
+// ======================= JSON TESTS =======================
+static void run_json_tests() {
+    printf("\nJSON Built-in Tests\n");
+    printf("---------------------\n");
+
+    // --- json.parse ---
+    run_interpreter_test("JSON: parse primitives",
+        "var json_text = '{\"a\":1, \"b\":-2.5, \"c\":true, \"d\":false, \"e\":null, \"f\":\"hello\"}';"
+        "var d = json.parse(json_text);"
+        "println(d.a); println(d.b); println(d.c); println(d.d); println(d.e); println(d.f);",
+        "1\n-2.5\ntrue\nfalse\nnil\nhello\n"
+    );
+    
+    run_interpreter_test("JSON: parse nested structures",
+        "var json_text = '{\"users\":[{\"name\":\"A\",\"id\":1}, {\"name\":\"B\",\"tags\":[1,2]}]}';"
+        "var d = json.parse(json_text);"
+        "println(d.users[0].name);"
+        "println(d.users[1].tags[1]);",
+        "A\n2\n"
+    );
+    
+    // Test GC robustness during parsing
+    run_gc_test("JSON: parse with GC stress",
+        "var big_json = '[' + string.repeat('{\"a\":1},', 1000) + '{\"a\":1}]';"
+        "var data = json.parse(big_json);"
+        "gc.collect();" // Force collection
+        "println(len(data));",
+        NULL // Just check for completion without error
+    );
+    run_interpreter_test("JSON: parse check result of GC stress",
+        "var big_json = '[' + string.repeat('{\"a\":1},', 1000) + '{\"a\":1}]';"
+        "var data = json.parse(big_json);"
+        "println(len(data));",
+        "1001\n"
+    );
+
+    // --- json.stringify ---
+    run_interpreter_test("JSON: stringify primitives",
+        "println(json.stringify(123));"
+        "println(json.stringify(-4.5));"
+        "println(json.stringify(\"hello\"));"
+        "println(json.stringify(true));"
+        "println(json.stringify(nil));",
+        "123\n-4.5\n\"hello\"\ntrue\nnull\n"
+    );
+    
+    run_interpreter_test("JSON: stringify composites",
+        "var o = {a:[1, true], b: {c:\"d\"}};"
+        "println(json.stringify(o));",
+        // Note: key order is not guaranteed. "a", "b" is a common one.
+        "{\"a\":[1,true],\"b\":{\"c\":\"d\"}}\n"
+    );
+
+    run_interpreter_test("JSON: stringify with pretty print",
+        "var o = {a:[1]};"
+        "println(json.stringify(o, true));",
+        "{\n\t\"a\":\t[1]\n}\n"
+    );
+
+    run_interpreter_test("JSON: stringify unstringifiable types",
+        "function f(){} var a = [f, println, 1];"
+        "println(json.stringify(a));",
+        "[null,null,1]\n"
+    );
+    run_interpreter_test("JSON: stringify unstringifiable top-level",
+        "println(json.stringify(function(){}));",
+        "null\n"
+    );
+
+    // --- stringify cycle detection ---
+    run_interpreter_test("JSON: stringify array cycle",
+        "var a = [1]; push(a, a);"
+        "println(json.stringify(a));",
+        "[1,null]\n"
+    );
+
+    run_interpreter_test("JSON: stringify object cycle",
+        "var o = {}; o.self = o;"
+        "println(json.stringify(o));",
+        "{\"self\":null}\n"
+    );
+    
+    // --- error cases ---
+    run_interpreter_error_test("JSON Error: parse invalid json", "json.parse(\"{key:1}\");", "JSON parse error");
+    run_interpreter_error_test("JSON Error: parse wrong type", "json.parse(123);", "expects one string argument");
+    run_interpreter_error_test("JSON Error: parse wrong argc", "json.parse();", "expects one string argument");
+    run_interpreter_error_test("JSON Error: stringify wrong argc", "json.stringify();", "expects 1 or 2 arguments");
+    run_interpreter_error_test("JSON Error: stringify wrong pretty type", "json.stringify({}, 1);", "second argument must be a boolean");
+}
+
 /*── Run all tests ───────────────────────────────────────────────────────*/
 static void run_all_tests() {
     printf("PrattLib Comprehensive Test Suite\n");
@@ -2888,6 +2978,9 @@ static void run_all_tests() {
     printf("\nExtra Builtin Function Tests\n");
     printf("----------------------------\n");
     run_extra_builtin_tests();
+    
+    // Run JSON tests
+    run_json_tests();
 
     // Summary
     printf("\n==================================\n");

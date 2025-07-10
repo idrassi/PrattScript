@@ -21,6 +21,7 @@ set_target_properties(prattlib PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
 
 # Create the test suite executable
 add_executable(test_suite
+    cJSON.c
     interpreter_core.c
     test_suite.c
     pratt_lexer.c
@@ -34,6 +35,7 @@ set_target_properties(test_suite PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YE
 
 # Create the interpreter executable
 add_executable(prattscript
+    cJSON.c
     interpreter.c
     interpreter_core.c
     pratt_lexer.c

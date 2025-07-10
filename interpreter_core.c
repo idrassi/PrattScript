@@ -60,6 +60,9 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+// For cJSON integration
+#include "cJSON.h"
+
 // For strptime
 #if !defined(_WIN32) && !defined(_MSC_VER)
 #define HAVE_STRPTIME
@@ -822,6 +825,10 @@ static Value builtin_date_parse(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_date_utc(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_date_local(Interpreter* interp, size_t argc, Value* args);
 
+// *********************** JSON BUILTINS ***********************
+static Value builtin_json_parse(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_json_stringify(Interpreter* interp, size_t argc, Value* args);
+// *************************************************************
 
 static BuiltinDef builtins[] = {
     {"print",   builtin_print},
@@ -1000,6 +1007,14 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     env_define(interp, interp->env, interpreter_intern_string(interp, "date", 4), make_obj((Obj*)date_object));
     pop_root(interp);
     
+    // --- JSON Object ---
+    ObjObject* json_object = new_object(interp);
+    push_root(interp, (Obj*)json_object);
+    map_set(interp, &json_object->map, interpreter_intern_string(interp, "parse", 5), make_builtin(builtin_json_parse));
+    map_set(interp, &json_object->map, interpreter_intern_string(interp, "stringify", 9), make_builtin(builtin_json_stringify));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "json", 4), make_obj((Obj*)json_object));
+    pop_root(interp);
+
     // --- Pop env, now that it's fully populated ---
     pop_root(interp); 
 }
@@ -3577,4 +3592,210 @@ static Value builtin_date_utc(Interpreter* interp, size_t argc, Value* args) {
     if (!timeinfo) return make_nil();
     struct tm copy = *timeinfo; // Copy from static buffer
     return tm_to_object(interp, &copy);
+}
+
+// --- JSON Built-in Implementations ---
+
+// Forward declaration for recursive conversion
+static Value convert_cjson_to_value(Interpreter* interp, cJSON* item);
+
+static Value convert_cjson_to_value(Interpreter* interp, cJSON* item) {
+    if (cJSON_IsInvalid(item)) {
+        runtime_error(interp, "Invalid cJSON item during conversion.");
+        return make_nil();
+    }
+    if (cJSON_IsNull(item))    return make_nil();
+    if (cJSON_IsTrue(item))    return make_bool(true);
+    if (cJSON_IsFalse(item))   return make_bool(false);
+    if (cJSON_IsString(item))  {
+        return make_obj((Obj*)make_heap_string(interp, item->valuestring, strlen(item->valuestring)));
+    }
+    if (cJSON_IsNumber(item))  {
+        double num = item->valuedouble;
+        if (num == (int64_t)num) {
+            return make_int((int64_t)num);
+        }
+        return make_double(num);
+    }
+    if (cJSON_IsArray(item)) {
+        ObjArray* array = new_array(interp);
+        push_root(interp, (Obj*)array); // Protect array from GC during population
+
+        cJSON* element;
+        cJSON_ArrayForEach(element, item) {
+            Value val = convert_cjson_to_value(interp, element);
+            if (interp->had_error) {
+                pop_root(interp); // Clean up root stack on error
+                return make_nil();
+            }
+            array_write(interp, array, val);
+        }
+
+        pop_root(interp);
+        return make_obj((Obj*)array);
+    }
+    if (cJSON_IsObject(item)) {
+        ObjObject* object = new_object(interp);
+        push_root(interp, (Obj*)object); // Protect object from GC during population
+
+        cJSON* element;
+        cJSON_ArrayForEach(element, item) {
+            ObjString* key = interpreter_intern_string(interp, element->string, strlen(element->string));
+            push_root(interp, (Obj*)key); // Protect key from GC while value is converted
+
+            Value val = convert_cjson_to_value(interp, element);
+            pop_root(interp); // Key is safe now
+            
+            if (interp->had_error) {
+                pop_root(interp); // Clean up object root on error
+                return make_nil();
+            }
+
+            map_set(interp, &object->map, key, val);
+        }
+
+        pop_root(interp);
+        return make_obj((Obj*)object);
+    }
+
+    runtime_error(interp, "Unknown cJSON type encountered during conversion.");
+    return make_nil();
+}
+
+static Value builtin_json_parse(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "json.parse() expects one string argument.");
+        return make_nil();
+    }
+    ObjString* json_string = AS_STRING(args[0]);
+
+    cJSON* root = cJSON_ParseWithLengthOpts(json_string->chars, json_string->length + 1, NULL, 0);
+    
+    // Check for a parse error.
+    if (root == NULL) {
+        const char* error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL) {
+            runtime_error(interp, "JSON parse error near: '%.20s'", error_ptr);
+        } else {
+            runtime_error(interp, "JSON parse error (null result).");
+        }
+        return make_nil();
+    }
+
+    // On success, convert the cJSON structure to PrattScript values.
+    Value result = convert_cjson_to_value(interp, root);
+
+    // Clean up the cJSON structure.
+    cJSON_Delete(root);
+
+    return result;
+}
+
+// Forward declaration for recursive conversion
+static cJSON* convert_value_to_cjson(Interpreter* interp, Value value, PrintVisitor* visitor);
+
+static cJSON* convert_value_to_cjson(Interpreter* interp, Value value, PrintVisitor* visitor) {
+    switch (value.type) {
+        case VAL_NIL:     return cJSON_CreateNull();
+        case VAL_BOOL:    return cJSON_CreateBool(AS_BOOL(value));
+        case VAL_INT:     return cJSON_CreateNumber((double)AS_INT(value));
+        case VAL_DOUBLE:  return cJSON_CreateNumber(AS_DOUBLE(value));
+        case VAL_OBJ:
+            if (visitor_contains(visitor, AS_OBJ(value))) {
+                return cJSON_CreateNull(); // Represent cycles as null
+            }
+            
+            if (IS_ARRAY(value) || IS_OBJECT(value)) {
+                visitor_push(visitor, AS_OBJ(value));
+            }
+
+            cJSON* result_json = NULL;
+
+            switch (OBJ_TYPE(value)) {
+                case OBJ_STRING:
+                    result_json = cJSON_CreateString(AS_CSTRING(value));
+                    break;
+                case OBJ_ARRAY: {
+                    ObjArray* array = AS_ARRAY(value);
+                    cJSON* json_array = cJSON_CreateArray();
+                    for (int i = 0; i < array->count; i++) {
+                        cJSON* item = convert_value_to_cjson(interp, array->values[i], visitor);
+                        if (item == NULL) item = cJSON_CreateNull(); 
+                        cJSON_AddItemToArray(json_array, item);
+                    }
+                    result_json = json_array;
+                    break;
+                }
+                case OBJ_OBJECT: {
+                    ObjObject* obj = AS_OBJECT(value);
+                    cJSON* json_object = cJSON_CreateObject();
+                    for (int i = 0; i < obj->map.capacity; i++) {
+                        Entry* entry = &obj->map.entries[i];
+                        if (entry->key != NULL) {
+                            cJSON* item = convert_value_to_cjson(interp, entry->value, visitor);
+                            // Unstringifiable values become null. Unlike JS, we don't omit the key.
+                            if (item == NULL) item = cJSON_CreateNull();
+                            cJSON_AddItemToObject(json_object, entry->key->chars, item);
+                        }
+                    }
+                    result_json = json_object;
+                    break;
+                }
+                default: // Functions, environments, etc., are not representable.
+                    result_json = cJSON_CreateNull();
+                    break;
+            }
+
+            if (IS_ARRAY(value) || IS_OBJECT(value)) {
+                visitor_pop(visitor);
+            }
+            return result_json;
+
+        default: // Builtins are not representable
+            return NULL;
+    }
+}
+
+static Value builtin_json_stringify(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2) {
+        runtime_error(interp, "json.stringify() expects 1 or 2 arguments, but got %zu.", argc);
+        return make_nil();
+    }
+    
+    bool pretty = false;
+    if (argc == 2) {
+        if (!IS_BOOL(args[1])) {
+            runtime_error(interp, "json.stringify() second argument must be a boolean.");
+            return make_nil();
+        }
+        pretty = AS_BOOL(args[1]);
+    }
+    
+    // Use the existing cycle detection mechanism from print_value
+    PrintVisitor visitor;
+    visitor_init(&visitor);
+    
+    cJSON* root = convert_value_to_cjson(interp, args[0], &visitor);
+    
+    visitor_free(&visitor);
+    
+    // If the top-level value is unstringifiable (e.g., a function), return "null".
+    if (root == NULL) {
+        root = cJSON_CreateNull();
+    }
+
+    char* c_string = pretty ? cJSON_Print(root) : cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    if (c_string == NULL) {
+        runtime_error(interp, "Failed to stringify value (out of memory).");
+        return make_nil();
+    }
+
+    ObjString* result = make_heap_string(interp, c_string, strlen(c_string));
+    
+    // cJSON's print functions use malloc, so we must free the string with free().
+    free(c_string); 
+
+    return make_obj((Obj*)result);
 }
