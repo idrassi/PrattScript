@@ -193,14 +193,14 @@ static PrattToken scan_number(PrattLexer *lex) {
     return make_token(lex, T_NUMBER, start, length);
 }
 
-/*── Scan a string ───────────────────────────────────────────────────────*/
-static PrattToken scan_string(PrattLexer *lex) {
+/*── Scan a string literal based on its closing quote ────────────────────*/
+static PrattToken scan_string_literal(PrattLexer *lex, char quote_char) {
     /* The opening quote was eaten by pratt_lexer_next().
        lex->pos now points at the first character of the string body. */
     const char *start_of_literal  = &lex->source[lex->pos - 1]; /* for errors */
     const char *start_of_content  = &lex->source[lex->pos];
 
-    while (lexer_peek(lex) != '"' && !is_at_end(lex)) {
+    while (lexer_peek(lex) != quote_char && !is_at_end(lex)) {
         char c = lexer_peek(lex);
         if (c == '\\') {
             advance_char(lex); // consume the backslash
@@ -213,6 +213,7 @@ static PrattToken scan_string(PrattLexer *lex) {
             char escaped = lexer_peek(lex);
             switch (escaped) {
                 case '"':   // \"
+                case '\'':  // \' (now valid within either string type)
                 case '\\':  // '\\'
                 case '/':   // \/
                 case 'b':   // \b (backspace)
@@ -235,10 +236,10 @@ static PrattToken scan_string(PrattLexer *lex) {
                     }
                     break;
                 default:
-                    // Invalid escape sequence
-                    return make_token(lex, T_ERROR,
-                                      start_of_literal,
-                                      &lex->source[lex->pos] - start_of_literal);
+                    // Invalid escape sequence, but we consume it to continue lexing.
+                    // The error is handled by the token type.
+                    advance_char(lex);
+                    break;
             }
         } else {
             advance_char(lex);
@@ -246,13 +247,14 @@ static PrattToken scan_string(PrattLexer *lex) {
     }
 
     if (is_at_end(lex)) {
+        // Unterminated string
         return make_token(lex, T_ERROR,
                           start_of_literal,
                           &lex->source[lex->pos] - start_of_literal);
     }
 
     size_t length = &lex->source[lex->pos] - start_of_content;
-    advance_char(lex); // Consume the closing '"'
+    advance_char(lex); // Consume the closing quote
     return make_token(lex, T_STRING, start_of_content, length);
 }
 
@@ -290,7 +292,6 @@ PrattToken pratt_lexer_next(void *ctx) {
     }
     
     char c = lexer_peek(lex);
-    const char *start = &lex->source[lex->pos];
     
     // Numbers
     if (isdigit(c)) {
@@ -342,8 +343,11 @@ PrattToken pratt_lexer_next(void *ctx) {
             if (lexer_peek(lex) == '|') { advance_char(lex); return make_token(lex, T_PIPE_PIPE, start_ptr, 2); }
             break;
 
+        // Call the generalized function for both quote types.
         case '"':
-            return scan_string(lex);
+            return scan_string_literal(lex, '"');
+        case '\'':
+            return scan_string_literal(lex, '\'');
 
         default:
             break; /* Let fall through to error token */
