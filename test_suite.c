@@ -38,6 +38,10 @@
 #define _CRT_NONSTDC_NO_DEPRECATE
 #include <io.h>
 #include <fcntl.h>
+#include <direct.h>
+#else
+#include <unistd.h>
+#include <sys/stat.h>
 #endif
 #include "pratt_default.h"
 #include "pratt_lexer.h"
@@ -48,8 +52,10 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <inttypes.h>
-#ifndef _WIN32
-#include <unistd.h>
+
+// For date.parse test
+#if !defined(_WIN32) && !defined(_MSC_VER)
+#define HAVE_STRPTIME
 #endif
 
 #define DEFAULT_INITIAL_ARENA_SIZE 8192
@@ -2290,6 +2296,155 @@ static void run_continue_tests() {
     test_continue_and_break();
 }
 
+static void run_fs_tests() {
+    printf("\n--- FS Built-in Tests ---\n");
+    // Setup: create a temporary directory for file operations
+#ifdef _WIN32
+    _mkdir("test_temp_dir");
+#else
+    mkdir("test_temp_dir", 0777);
+#endif
+
+    run_interpreter_test("fs.writeFile and fs.exists",
+        "var success = fs.writeFile(\"test_temp_dir/test.txt\", \"hello\");"
+        "println(success);"
+        "println(fs.exists(\"test_temp_dir/test.txt\"));"
+        "println(fs.exists(\"test_temp_dir/nonexistent.txt\"));",
+        "true\ntrue\nfalse\n");
+
+    run_interpreter_test("fs.readFile",
+        "println(fs.readFile(\"test_temp_dir/test.txt\"));",
+        "hello\n");
+
+    run_interpreter_error_test("fs.readFile error",
+        "fs.readFile(\"test_temp_dir/nonexistent.txt\");",
+        "Could not open file");
+
+    run_interpreter_test("fs.writeFile append",
+        "fs.writeFile(\"test_temp_dir/test.txt\", \" world\", true);"
+        "println(fs.readFile(\"test_temp_dir/test.txt\"));",
+        "hello world\n");
+
+    run_interpreter_test("fs.listDir",
+        "fs.writeFile(\"test_temp_dir/file2.txt\", \"\");"
+        "var files = array.sort(fs.listDir(\"test_temp_dir\"));" // Sort for consistent test output
+        "println(files);",
+        "[file2.txt, test.txt]\n");
+
+    run_interpreter_test("fs.remove file",
+        "var success = fs.remove(\"test_temp_dir/test.txt\");"
+        "println(success);"
+        "println(fs.exists(\"test_temp_dir/test.txt\"));",
+        "true\nfalse\n");
+    
+    // Cleanup remaining files from this test group
+    remove("test_temp_dir/file2.txt");
+
+    run_interpreter_error_test("fs.remove error",
+        "fs.remove(\"test_temp_dir/nonexistent.txt\");",
+        "Could not remove");
+
+    // Teardown
+#ifdef _WIN32
+    _rmdir("test_temp_dir");
+#else
+    rmdir("test_temp_dir");
+#endif
+}
+
+static void run_path_tests() {
+    printf("\n--- Path Built-in Tests ---\n");
+#ifdef _WIN32
+    #define SEP "\\"
+#else
+    #define SEP "/"
+#endif
+    run_interpreter_test("path.join",
+        "println(path.join(\"a\", \"b\", \"c\"));"
+        "println(path.join(\"a/\", \"b\"));"
+        "println(path.join(\"a\", \"\", \"b\"));",
+        "a" SEP "b" SEP "c\n"
+        "a" SEP "b\n"
+        "a" SEP "b\n");
+
+    run_interpreter_test("path.basename",
+        "println(path.basename(\"/foo/bar/baz.txt\"));"
+        "println(path.basename(\"/foo/bar/\"));"
+        "println(path.basename(\"baz.txt\"));"
+        "println(path.basename(\"C:\\\\foo\\\\bar.txt\"));",
+        "baz.txt\nbar\nbaz.txt\nbar.txt\n");
+
+    run_interpreter_test("path.dirname",
+        "println(path.dirname(\"/foo/bar/baz.txt\"));"
+        "println(path.dirname(\"/foo/bar/\"));"
+        "println(path.dirname(\"baz.txt\"));"
+        "println(path.dirname(\"/\"));",
+        "/foo/bar\n/foo\n.\n/\n");
+
+    run_interpreter_test("path.extname",
+        "println(path.extname(\"foo.txt\"));"
+        "println(path.extname(\"foo.bar.txt\"));"
+        "println(path.extname(\"foo.\"));"
+        "println(path.extname(\".bashrc\"));"
+        "println(path.extname(\"noext\"));"
+        "println(path.extname(\"\"));",
+        ".txt\n.txt\n.\n.bashrc\n\n\n");
+}
+
+static void run_os_tests() {
+    printf("\n--- OS Built-in Tests ---\n");
+    run_interpreter_test("os.platform",
+        "println(len(os.platform()) > 0);",
+        "true\n");
+
+    run_interpreter_test("os.cwd",
+        "println(len(os.cwd()) > 0);",
+        "true\n");
+    
+    run_interpreter_test("os.env",
+        "println(os.env(\"NON_EXISTENT_VAR_12345\", \"default\"));",
+        "default\n");
+
+    run_interpreter_error_test("os.exec error", "os.exec(123);", "expects a string command");
+
+#ifdef _WIN32
+    run_interpreter_test("os.exec", "println(os.exec(\"echo test > NUL\"));", "0\n");
+#else
+    run_interpreter_test("os.exec", "println(os.exec(\"echo test > /dev/null\"));", "0\n");
+#endif
+}
+
+static void run_date_tests() {
+    printf("\n--- Date Built-in Tests ---\n");
+    run_interpreter_test("date.now",
+        "var n = date.now(); println(n > 1600000000);",
+        "true\n");
+    
+    // This test is timezone-dependent, but should pass in most cases.
+    run_interpreter_test("date.format",
+        "var ts = 1672531200; // 2023-01-01 00:00:00 UTC\n"
+        "var s = date.format(ts, \"%Y-%m-%d\");"
+        "println(s == \"2023-01-01\" || s == \"2022-12-31\");",
+        "true\n");
+
+#ifdef HAVE_STRPTIME
+    run_interpreter_test("date.parse",
+        "var ts = date.parse(\"2023-01-01 12:30:00\", \"%Y-%m-%d %H:%M:%S\");"
+        "println(typeof(ts));",
+        "number\n");
+    run_interpreter_error_test("date.parse error", "date.parse(\"invalid\", \"%Y\");", "does not match format");
+#endif
+
+    run_interpreter_test("date.utc and date.local",
+        "var ts = 0; // The epoch\n"
+        "var u = date.utc(ts);"
+        "var l = date.local(ts);"
+        "println(u.year); println(u.month); println(u.day); println(u.hour);"
+        "println(l.year == 1969 || l.year == 1970); // Depending on timezone",
+        "1970\n1\n1\n0\ntrue\n");
+}
+
+
 
 static void run_extra_builtin_tests() {
     run_interpreter_test("Builtin: typeof",
@@ -2514,6 +2669,11 @@ static void run_extra_builtin_tests() {
         "var a = [1, 2, 3, 4, 5]; array.shuffle(a); println(len(a) == 5);", // Just check it runs and returns same length
         "true\n"
     );
+
+    run_fs_tests();
+    run_path_tests();
+    run_os_tests();
+    run_date_tests();
 }
 
 /*── Interpreter tests for the modulo operator ─────────────────────────*/

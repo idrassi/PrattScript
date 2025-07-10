@@ -36,6 +36,14 @@
 #ifdef _WIN32
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+#include <io.h>
+#include <direct.h>
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#else
+#include <unistd.h> // For access, unlink, getcwd
+#include <sys/wait.h>
+#include <dirent.h>
 #endif
 #include "interpreter_core.h"
 #include "pratt_config.h"
@@ -50,6 +58,13 @@
 #include <errno.h>
 #include <time.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+
+// For strptime
+#if !defined(_WIN32) && !defined(_MSC_VER)
+#define HAVE_STRPTIME
+#endif
+
 
 // Forward declare since they are mutually recursive
 ExecResult eval(Interpreter *interp, ASTNode *node);
@@ -777,6 +792,32 @@ static Value builtin_array_sort(Interpreter*, size_t, Value*);
 static Value builtin_array_reverse(Interpreter*, size_t, Value*);
 static Value builtin_array_shuffle(Interpreter*, size_t, Value*);
 
+// fs object
+static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_writeFile(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_exists(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_listDir(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_remove(Interpreter* interp, size_t argc, Value* args);
+
+// path object
+static Value builtin_path_join(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_path_basename(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_path_dirname(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_path_extname(Interpreter* interp, size_t argc, Value* args);
+
+// os object
+static Value builtin_os_env(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_exec(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_cwd(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_platform(Interpreter* interp, size_t argc, Value* args);
+
+// date object
+static Value builtin_date_now(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_date_format(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_date_parse(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_date_utc(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_date_local(Interpreter* interp, size_t argc, Value* args);
+
 
 static BuiltinDef builtins[] = {
     {"print",   builtin_print},
@@ -906,6 +947,50 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &array_object->map, interpreter_intern_string(interp, "reverse", 7), make_builtin(builtin_array_reverse));
     map_set(interp, &array_object->map, interpreter_intern_string(interp, "shuffle", 7), make_builtin(builtin_array_shuffle));
     env_define(interp, interp->env, interpreter_intern_string(interp, "array", 5), make_obj((Obj*)array_object));
+    pop_root(interp);
+
+    // --- fs, path, os, date objects ---
+
+    // FS Object
+    ObjObject* fs_object = new_object(interp);
+    push_root(interp, (Obj*)fs_object);
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "readFile", 8), make_builtin(builtin_fs_readFile));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "writeFile", 9), make_builtin(builtin_fs_writeFile));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "exists", 6), make_builtin(builtin_fs_exists));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "listDir", 7), make_builtin(builtin_fs_listDir));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "remove", 6), make_builtin(builtin_fs_remove));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "fs", 2), make_obj((Obj*)fs_object));
+    pop_root(interp);
+
+    // Path Object
+    ObjObject* path_object = new_object(interp);
+    push_root(interp, (Obj*)path_object);
+    map_set(interp, &path_object->map, interpreter_intern_string(interp, "join", 4), make_builtin(builtin_path_join));
+    map_set(interp, &path_object->map, interpreter_intern_string(interp, "basename", 8), make_builtin(builtin_path_basename));
+    map_set(interp, &path_object->map, interpreter_intern_string(interp, "dirname", 7), make_builtin(builtin_path_dirname));
+    map_set(interp, &path_object->map, interpreter_intern_string(interp, "extname", 7), make_builtin(builtin_path_extname));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "path", 4), make_obj((Obj*)path_object));
+    pop_root(interp);
+
+    // OS Object
+    ObjObject* os_object = new_object(interp);
+    push_root(interp, (Obj*)os_object);
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "env", 3), make_builtin(builtin_os_env));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "exec", 4), make_builtin(builtin_os_exec));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "cwd", 3), make_builtin(builtin_os_cwd));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "platform", 8), make_builtin(builtin_os_platform));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "os", 2), make_obj((Obj*)os_object));
+    pop_root(interp);
+
+    // Date Object
+    ObjObject* date_object = new_object(interp);
+    push_root(interp, (Obj*)date_object);
+    map_set(interp, &date_object->map, interpreter_intern_string(interp, "now", 3), make_builtin(builtin_date_now));
+    map_set(interp, &date_object->map, interpreter_intern_string(interp, "format", 6), make_builtin(builtin_date_format));
+    map_set(interp, &date_object->map, interpreter_intern_string(interp, "parse", 5), make_builtin(builtin_date_parse));
+    map_set(interp, &date_object->map, interpreter_intern_string(interp, "utc", 3), make_builtin(builtin_date_utc));
+    map_set(interp, &date_object->map, interpreter_intern_string(interp, "local", 5), make_builtin(builtin_date_local));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "date", 4), make_obj((Obj*)date_object));
     pop_root(interp);
     
     // --- Pop env, now that it's fully populated ---
@@ -2873,4 +2958,544 @@ static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
     ObjString* result_str = make_heap_string(interp, result_chars, total_len);
     PRATT_FREE(result_chars);
     return make_obj((Obj*)result_str);
+}
+
+
+// --- FS Object ---
+
+static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2 || !IS_STRING(args[0])) {
+        runtime_error(interp, "fs.readFile(path, [encoding]) expects a string path.");
+        return make_nil();
+    }
+    // The 'encoding' argument is ignored for now, as per the spec.
+    
+    const char* path = AS_CSTRING(args[0]);
+    FILE* file = fopen(path, "rb");
+    if (file == NULL) {
+        runtime_error(interp, "Could not open file '%s': %s", path, strerror(errno));
+        return make_nil();
+    }
+    
+    fseek(file, 0L, SEEK_END);
+    long file_size = ftell(file);
+    rewind(file);
+    
+    char* buffer = PRATT_MALLOC(file_size);
+    if (buffer == NULL) {
+        fclose(file);
+        runtime_error(interp, "Not enough memory to read file '%s'", path);
+        return make_nil();
+    }
+    
+    size_t bytes_read = fread(buffer, 1, file_size, file);
+    if (bytes_read < (size_t)file_size) {
+        PRATT_FREE(buffer);
+        fclose(file);
+        runtime_error(interp, "Could not read entire file '%s'", path);
+        return make_nil();
+    }
+    
+    fclose(file);
+    
+    ObjString* result = make_heap_string(interp, buffer, bytes_read);
+    PRATT_FREE(buffer);
+    
+    return make_obj((Obj*)result);
+}
+
+static Value builtin_fs_writeFile(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 2 || argc > 3 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "fs.writeFile(path, data, [append]) expects string path and data.");
+        return make_nil();
+    }
+    
+    bool append = false;
+    if (argc == 3) {
+        if (!IS_BOOL(args[2])) {
+            runtime_error(interp, "fs.writeFile() 'append' argument must be a boolean.");
+            return make_nil();
+        }
+        append = AS_BOOL(args[2]);
+    }
+    
+    const char* path = AS_CSTRING(args[0]);
+    ObjString* data = AS_STRING(args[1]);
+    
+    const char* mode = append ? "ab" : "wb";
+    FILE* file = fopen(path, mode);
+    if (file == NULL) {
+        runtime_error(interp, "Could not open file '%s' for writing: %s", path, strerror(errno));
+        return make_bool(false);
+    }
+    
+    size_t bytes_written = fwrite(data->chars, 1, data->length, file);
+    fclose(file);
+    
+    if (bytes_written < data->length) {
+        runtime_error(interp, "Could not write all data to file '%s'", path);
+        return make_bool(false);
+    }
+    
+    return make_bool(true);
+}
+
+static Value builtin_fs_exists(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "fs.exists(path) expects a string path.");
+        return make_nil();
+    }
+    const char* path = AS_CSTRING(args[0]);
+    struct stat buffer;
+    return make_bool(stat(path, &buffer) == 0);
+}
+
+static Value builtin_fs_listDir(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "fs.listDir(path) expects a string path.");
+        return make_nil();
+    }
+    const char* path = AS_CSTRING(args[0]);
+    ObjArray* dir_list = new_array(interp);
+    push_root(interp, (Obj*)dir_list); // Protect from GC
+
+#ifdef _WIN32
+    WIN32_FIND_DATAA find_data;
+    char search_path[MAX_PATH];
+    snprintf(search_path, MAX_PATH, "%s\\*", path);
+    HANDLE h_find = FindFirstFileA(search_path, &find_data);
+
+    if (h_find == INVALID_HANDLE_VALUE) {
+        pop_root(interp);
+        runtime_error(interp, "Could not open directory '%s'.", path);
+        return make_nil();
+    }
+
+    do {
+        // Skip "." and ".."
+        if (strcmp(find_data.cFileName, ".") != 0 && strcmp(find_data.cFileName, "..") != 0) {
+            size_t len = strlen(find_data.cFileName);
+            ObjString* name = make_heap_string(interp, find_data.cFileName, len);
+            array_write(interp, dir_list, make_obj((Obj*)name));
+        }
+    } while (FindNextFileA(h_find, &find_data) != 0);
+
+    FindClose(h_find);
+#else
+    DIR* d = opendir(path);
+    if (d == NULL) {
+        pop_root(interp);
+        runtime_error(interp, "Could not open directory '%s': %s", path, strerror(errno));
+        return make_nil();
+    }
+
+    struct dirent* dir;
+    while ((dir = readdir(d)) != NULL) {
+        // Skip "." and ".."
+        if (strcmp(dir->d_name, ".") != 0 && strcmp(dir->d_name, "..") != 0) {
+            size_t len = strlen(dir->d_name);
+            ObjString* name = make_heap_string(interp, dir->d_name, len);
+            array_write(interp, dir_list, make_obj((Obj*)name));
+        }
+    }
+    closedir(d);
+#endif
+
+    pop_root(interp);
+    return make_obj((Obj*)dir_list);
+}
+
+static Value builtin_fs_remove(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "fs.remove(path) expects a string path.");
+        return make_nil();
+    }
+    const char* path = AS_CSTRING(args[0]);
+
+#ifdef _WIN32
+    struct stat stat_buf;
+    if (stat(path, &stat_buf) != 0) {
+        // File/dir does not exist, but let the remove functions handle the error.
+    }
+    if (S_ISDIR(stat_buf.st_mode)) {
+        if (RemoveDirectoryA(path)) {
+            return make_bool(true);
+        }
+    } else {
+        if (DeleteFileA(path)) {
+            return make_bool(true);
+        }
+    }
+#else
+    if (unlink(path) == 0) {
+        return make_bool(true);
+    }
+    // If unlink fails, it might be a directory.
+    if (errno == EISDIR) {
+        if (rmdir(path) == 0) {
+            return make_bool(true);
+        }
+    }
+#endif
+
+    // If we get here, the operation failed.
+    runtime_error(interp, "Could not remove '%s': %s", path, strerror(errno));
+    return make_bool(false);
+}
+
+// --- Path Object ---
+
+static Value builtin_path_join(Interpreter* interp, size_t argc, Value* args) {
+#ifdef _WIN32
+    const char sep = '\\';
+    const char alt_sep = '/';
+#else
+    const char sep = '/';
+    const char alt_sep = '\\'; // Less common, but good to handle
+#endif
+
+    if (argc == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+
+    size_t total_len = 0;
+    for (size_t i = 0; i < argc; i++) {
+        if (!IS_STRING(args[i])) {
+            runtime_error(interp, "path.join() all arguments must be strings.");
+            return make_nil();
+        }
+        total_len += AS_STRING(args[i])->length;
+    }
+    total_len += argc; // Generous allocation for separators and null terminator
+
+    char* buffer = PRATT_MALLOC(total_len + 1);
+    if (!buffer) {
+        runtime_error(interp, "Out of memory for path.join().");
+        return make_nil();
+    }
+    char* p = buffer;
+    *p = '\0';
+
+    for (size_t i = 0; i < argc; i++) {
+        ObjString* part = AS_STRING(args[i]);
+        if (part->length == 0) continue;
+
+        if (p > buffer) { // If not the first part
+            char last_char = *(p - 1);
+            if (last_char != sep && last_char != alt_sep) {
+                *(p++) = sep;
+            }
+        }
+
+        const char* part_chars = part->chars;
+        size_t part_len = part->length;
+
+        // Skip leading separators on subsequent parts
+        if (p > buffer) {
+            while (part_len > 0 && (*part_chars == sep || *part_chars == alt_sep)) {
+                part_chars++;
+                part_len--;
+            }
+        }
+        
+        if (part_len > 0) {
+            memcpy(p, part_chars, part_len);
+            p += part_len;
+        }
+    }
+    *p = '\0';
+
+    // Normalize separators
+    for (char* c = buffer; *c; ++c) {
+        if (*c == alt_sep) {
+            *c = sep;
+        }
+    }
+
+    size_t final_len = p - buffer;
+    ObjString* result = make_heap_string(interp, buffer, final_len);
+    PRATT_FREE(buffer);
+    return make_obj((Obj*)result);
+}
+
+static Value builtin_path_basename(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "path.basename(path) expects a string path.");
+        return make_nil();
+    }
+    ObjString* path = AS_STRING(args[0]);
+    if (path->length == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+
+    const char* p = path->chars + path->length - 1;
+    // Handle trailing slashes
+    while (p > path->chars && (*p == '/' || *p == '\\')) {
+        p--;
+    }
+
+    const char* end = p;
+    while (p > path->chars) {
+        if (*p == '/' || *p == '\\') {
+            p++;
+            break;
+        }
+        p--;
+    }
+
+    size_t len = end - p + 1;
+    return make_obj((Obj*)make_heap_string(interp, p, len));
+}
+
+static Value builtin_path_dirname(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "path.dirname(path) expects a string path.");
+        return make_nil();
+    }
+    ObjString* path = AS_STRING(args[0]);
+    if (path->length == 0) {
+        return make_obj((Obj*)make_heap_string(interp, ".", 1));
+    }
+
+    const char* end = path->chars + path->length - 1;
+    // Handle trailing slashes
+    while (end > path->chars && (*end == '/' || *end == '\\')) {
+        end--;
+    }
+
+    const char* p = end;
+    while (p > path->chars) {
+        if (*p == '/' || *p == '\\') {
+            break;
+        }
+        p--;
+    }
+
+    if (p == path->chars && *p != '/' && *p != '\\') {
+        return make_obj((Obj*)make_heap_string(interp, ".", 1));
+    }
+
+    // Handle root path like "/"
+    if (p == path->chars && (*p == '/' || *p == '\\')) {
+        return make_obj((Obj*)make_heap_string(interp, path->chars, 1));
+    }
+    
+    // Skip trailing slashes on the dirname
+    while (p > path->chars && (*p == '/' || *p == '\\')) {
+        p--;
+    }
+
+    size_t len = p - path->chars + 1;
+    return make_obj((Obj*)make_heap_string(interp, path->chars, len));
+}
+
+static Value builtin_path_extname(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "path.extname(path) expects a string path.");
+        return make_nil();
+    }
+
+    Value basename_val = builtin_path_basename(interp, argc, args);
+    if (interp->had_error) return make_nil();
+    ObjString* basename = AS_STRING(basename_val);
+    
+    const char* p = basename->chars + basename->length - 1;
+    while (p >= basename->chars) {
+        if (*p == '.') {
+            size_t len = (basename->chars + basename->length) - p;
+            return make_obj((Obj*)make_heap_string(interp, p, len));
+        }
+        p--;
+    }
+    
+    return make_obj((Obj*)make_heap_string(interp, "", 0));
+}
+
+
+// --- OS Object ---
+
+static Value builtin_os_env(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2 || !IS_STRING(args[0])) {
+        runtime_error(interp, "os.env(name, [default]) expects a string name.");
+        return make_nil();
+    }
+    
+    const char* name = AS_CSTRING(args[0]);
+    const char* value = getenv(name);
+    
+    if (value != NULL) {
+        return make_obj((Obj*)make_heap_string(interp, value, strlen(value)));
+    }
+    
+    if (argc == 2) {
+        return args[1];
+    }
+    
+    return make_nil();
+}
+
+static Value builtin_os_exec(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "os.exec(cmd) expects a string command.");
+        return make_nil();
+    }
+    
+    const char* cmd = AS_CSTRING(args[0]);
+    int result = system(cmd);
+    
+#ifdef _WIN32
+    return make_int(result);
+#else
+    if (WIFEXITED(result)) {
+        return make_int(WEXITSTATUS(result));
+    }
+    // Command terminated abnormally
+    return make_int(-1);
+#endif
+}
+
+static Value builtin_os_cwd(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "os.cwd() expects 0 arguments.");
+        return make_nil();
+    }
+    
+    char buffer[1024];
+#ifdef _WIN32
+    if (_getcwd(buffer, sizeof(buffer)) == NULL) {
+        runtime_error(interp, "Could not get current working directory: %s", strerror(errno));
+        return make_nil();
+    }
+#else
+    if (getcwd(buffer, sizeof(buffer)) == NULL) {
+        runtime_error(interp, "Could not get current working directory: %s", strerror(errno));
+        return make_nil();
+    }
+#endif
+    return make_obj((Obj*)make_heap_string(interp, buffer, strlen(buffer)));
+}
+
+static Value builtin_os_platform(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "os.platform() expects 0 arguments.");
+        return make_nil();
+    }
+
+#if defined(_WIN32)
+    const char* platform = "win32";
+#elif defined(__linux__)
+    const char* platform = "linux";
+#elif defined(__APPLE__) && defined(__MACH__)
+    const char* platform = "darwin";
+#elif defined(__FreeBSD__)
+    const char* platform = "freebsd";
+#else
+    const char* platform = "unknown";
+#endif
+
+    return make_obj((Obj*)make_heap_string(interp, platform, strlen(platform)));
+}
+
+// --- Date Object ---
+
+static Value builtin_date_now(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "date.now() expects 0 arguments.");
+        return make_nil();
+    }
+    return make_int((int64_t)time(NULL));
+}
+
+static Value builtin_date_format(Interpreter* interp, size_t argc, Value* args) {
+    if (argc < 1 || argc > 2 || !IS_INT(args[0])) {
+        runtime_error(interp, "date.format(timestamp, [format]) expects an integer timestamp.");
+        return make_nil();
+    }
+    
+    time_t ts = (time_t)AS_INT(args[0]);
+    const char* fmt = "%Y-%m-%d %H:%M:%S";
+    if (argc == 2) {
+        if (!IS_STRING(args[1])) {
+            runtime_error(interp, "date.format() format argument must be a string.");
+            return make_nil();
+        }
+        fmt = AS_CSTRING(args[1]);
+    }
+    
+    struct tm* timeinfo = localtime(&ts);
+    char buffer[256];
+    size_t len = strftime(buffer, sizeof(buffer), fmt, timeinfo);
+    
+    return make_obj((Obj*)make_heap_string(interp, buffer, len));
+}
+
+static Value builtin_date_parse(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "date.parse(str, fmt) expects two string arguments.");
+        return make_nil();
+    }
+    
+#ifdef HAVE_STRPTIME
+    const char* str = AS_CSTRING(args[0]);
+    const char* fmt = AS_CSTRING(args[1]);
+    struct tm tm = {0};
+    
+    char* unparsed = strptime(str, fmt, &tm);
+    if (unparsed == NULL || *unparsed != '\0') {
+        runtime_error(interp, "String '%s' does not match format '%s'.", str, fmt);
+        return make_nil();
+    }
+    
+    time_t t = mktime(&tm);
+    if (t == -1) {
+        runtime_error(interp, "Could not convert parsed time to a timestamp.");
+        return make_nil();
+    }
+    
+    return make_int((int64_t)t);
+#else
+    runtime_error(interp, "date.parse() is not supported on this platform.");
+    return make_nil();
+#endif
+}
+
+static Value tm_to_object(Interpreter* interp, const struct tm* t) {
+    ObjObject* obj = new_object(interp);
+    push_root(interp, (Obj*)obj);
+
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "year", 4), make_int(t->tm_year + 1900));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "month", 5), make_int(t->tm_mon + 1));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "day", 3), make_int(t->tm_mday));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "hour", 4), make_int(t->tm_hour));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "min", 3), make_int(t->tm_min));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "sec", 3), make_int(t->tm_sec));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "yday", 4), make_int(t->tm_yday + 1));
+    map_set(interp, &obj->map, interpreter_intern_string(interp, "wday", 4), make_int(t->tm_wday));
+
+    pop_root(interp);
+    return make_obj((Obj*)obj);
+}
+
+static Value builtin_date_local(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        runtime_error(interp, "date.local(timestamp) expects an integer timestamp.");
+        return make_nil();
+    }
+    time_t ts = (time_t)AS_INT(args[0]);
+    struct tm* timeinfo = localtime(&ts);
+    if (!timeinfo) return make_nil();
+    struct tm copy = *timeinfo; // Copy from static buffer
+    return tm_to_object(interp, &copy);
+}
+
+static Value builtin_date_utc(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        runtime_error(interp, "date.utc(timestamp) expects an integer timestamp.");
+        return make_nil();
+    }
+    time_t ts = (time_t)AS_INT(args[0]);
+    struct tm* timeinfo = gmtime(&ts);
+    if (!timeinfo) return make_nil();
+    struct tm copy = *timeinfo; // Copy from static buffer
+    return tm_to_object(interp, &copy);
 }
