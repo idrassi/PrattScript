@@ -758,6 +758,10 @@ static Value builtin_math_tan(Interpreter*, size_t, Value*);
 static Value builtin_math_log(Interpreter*, size_t, Value*);
 static Value builtin_math_log10(Interpreter*, size_t, Value*);
 static Value builtin_math_random(Interpreter*, size_t, Value*);
+static Value builtin_math_random_seed(Interpreter*, size_t, Value*);
+static Value builtin_math_random_int(Interpreter*, size_t, Value*);
+static Value builtin_math_random_bytes(Interpreter*, size_t, Value*);
+
 // String object functions
 static Value builtin_string_split(Interpreter*, size_t, Value*);
 static Value builtin_string_trim(Interpreter*, size_t, Value*);
@@ -863,7 +867,7 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     interner_init(&interp->interner);
 
     // --- Seed random number generator ---
-    srand((unsigned int)time(NULL));
+    sfc64_init(&interp->rng, (uint64_t)time(NULL));
 
     // Create the global environment. It's an object now.
     interp->env = new_env_obj(interp, NULL);
@@ -914,6 +918,9 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "log", 3), make_builtin(builtin_math_log));
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "log10", 5), make_builtin(builtin_math_log10));
     map_set(interp, &math_object->map, interpreter_intern_string(interp, "random", 6), make_builtin(builtin_math_random));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "seedrandom", 10), make_builtin(builtin_math_random_seed));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "randomInt", 9), make_builtin(builtin_math_random_int));
+    map_set(interp, &math_object->map, interpreter_intern_string(interp, "randomBytes", 11), make_builtin(builtin_math_random_bytes));
     env_define(interp, interp->env, interpreter_intern_string(interp, "math", 4), make_obj((Obj*)math_object));
     pop_root(interp);
 
@@ -2807,7 +2814,79 @@ static Value builtin_math_random(Interpreter* interp, size_t argc, Value* args) 
         runtime_error(interp, "math.random() expects 0 arguments, but got %zu.", argc);
         return make_nil();
     }
-    return make_double((double)rand() / (RAND_MAX + 1.0));
+    // Pull one uniform [0,1) double from SFC64
+    double r = sfc64_double(&interp->rng);
+    return make_double(r);
+}
+
+static Value builtin_math_random_seed(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        runtime_error(interp, "math.seedrandom(seed) expects a single integer argument.");
+        return make_nil();
+    }
+    uint64_t seed = (uint64_t) AS_INT(args[0]);
+    sfc64_init(&interp->rng, seed);
+    return make_nil();
+}
+
+static Value builtin_math_random_int(Interpreter* interp, size_t argc, Value* args) {
+    if (argc == 0) {
+        // No arguments: return a random 64-bit integer
+        int64_t random_value = (int64_t)sfc64_next(&interp->rng);
+        return make_int(random_value);
+    }
+    if (argc == 2 && IS_INT(args[0]) && IS_INT(args[1])) {
+        int64_t min = AS_INT(args[0]);
+        int64_t max = AS_INT(args[1]);
+        if (min >= max) {
+            runtime_error(interp, "math.randomInt() requires min < max.");
+            return make_nil();
+        }
+        // Generate a random integer in the range [min, max)
+        int64_t range = max - min;
+        int64_t random_value = sfc64_next(&interp->rng) % range + min;
+        return make_int(random_value);
+    }
+    runtime_error(interp, "math.randomInt() expects either no arguments or two integer arguments.");
+    return make_nil();
+}
+static Value builtin_math_random_bytes(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_INT(args[0])) {
+        runtime_error(interp, "math.randomBytes(len) expects a single integer argument.");
+        return make_nil();
+    }
+    int64_t len = AS_INT(args[0]);
+    if (len < 0) {
+        runtime_error(interp, "math.randomBytes(len): length cannot be negative.");
+        return make_nil();
+    }
+    if (len == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+
+    char* buffer = PRATT_MALLOC((size_t)len);
+    if (!buffer) {
+        runtime_error(interp, "Out of memory in randomBytes.");
+        return make_nil();
+    }
+
+    int64_t full_chunks = len / 8;
+    int64_t remaining = len % 8;
+    int64_t offset = 0;
+
+    for (int64_t i = 0; i < full_chunks; i++) {
+        uint64_t rnd = sfc64_next(&interp->rng);
+        memcpy(buffer + offset, &rnd, 8);
+        offset += 8;
+    }
+    if (remaining > 0) {
+        uint64_t rnd = sfc64_next(&interp->rng);
+        memcpy(buffer + offset, &rnd, remaining);
+    }
+
+    ObjString* result = make_heap_string(interp, buffer, (size_t)len);
+    PRATT_FREE(buffer);
+    return make_obj((Obj*)result);
 }
 
 static Value builtin_string_split(Interpreter* interp, size_t argc, Value* args) {

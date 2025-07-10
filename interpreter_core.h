@@ -39,6 +39,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "pratt_default.h"
+#include "sfc64.h"
 
 // All heap-allocated objects share this header.
 typedef enum {
@@ -217,6 +218,11 @@ struct Interpreter {
     // Error state
     int had_error;
     char error_message[256];
+
+    // Random number generator context used in built-ins
+    // SFC64 offers a fast, high-quality RNG suitable for games and simulations.
+    // It is better than the standard rand() for most use cases.
+    SFC64Context rng;
 };
 
 // Public API
