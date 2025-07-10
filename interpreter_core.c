@@ -3059,22 +3059,63 @@ static Value builtin_array_join(Interpreter* interp, size_t argc, Value* args) {
 
 static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args) {
     if (argc < 1 || argc > 2 || !IS_STRING(args[0])) {
-        runtime_error(interp, "fs.readFile(path, [encoding]) expects a string path.");
+        runtime_error(interp, "fs.readFile(path, [options]) expects a string path.");
         return make_nil();
     }
-    // The 'encoding' argument is ignored for now, as per the spec.
+
+    // --- Default options ---
+    const char* mode_str = "text";
+
+    // --- Parse options ---
+    if (argc == 2) {
+        Value options_val = args[1];
+        if (IS_OBJECT(options_val)) {
+            ObjObject* options_obj = AS_OBJECT(options_val);
+            Value opt_val;
+
+            // Check for 'mode' property: "text" or "binary"
+            ObjString* mode_key = interpreter_intern_string(interp, "mode", 4);
+            if (map_get(&options_obj->map, mode_key, &opt_val) && IS_STRING(opt_val)) {
+                mode_str = AS_CSTRING(opt_val);
+            }
+        } else if (IS_STRING(options_val)) {
+            // second argument is an encoding string
+            mode_str = AS_CSTRING(options_val);
+        } else if (!IS_NIL(options_val)) {
+            runtime_error(interp, "fs.readFile() second argument must be an options object, a string, or nil.");
+            return make_nil();
+        }
+    }
+
+    // --- Validate options and determine fopen mode ---
+    bool is_binary;
+    if (strcmp(mode_str, "binary") == 0) {
+        is_binary = true;
+    } else if (strcmp(mode_str, "text") == 0) {
+        is_binary = false;
+    } else {
+        runtime_error(interp, "Invalid mode '%s'. Must be 'text' or 'binary'.", mode_str);
+        return make_nil();
+    }
     
+    const char* fopen_mode = is_binary ? "rb" : "r";
     const char* path = AS_CSTRING(args[0]);
-    FILE* file = fopen(path, "rb");
-    if (file == NULL) {
+
+    struct stat stat_buffer;
+    if (stat(path, &stat_buffer) != 0) {
         runtime_error(interp, "Could not open file '%s': %s", path, strerror(errno));
         return make_nil();
     }
     
-    fseek(file, 0L, SEEK_END);
-    long file_size = ftell(file);
-    rewind(file);
-    
+    // --- Read file ---
+    FILE* file = fopen(path, fopen_mode);
+    if (file == NULL) {
+        runtime_error(interp, "Could not open file '%s': %s", path, strerror(errno));
+        return make_nil();
+    }
+
+    long file_size = stat_buffer.st_size;
+
     char* buffer = PRATT_MALLOC(file_size);
     if (buffer == NULL) {
         fclose(file);
@@ -3083,7 +3124,7 @@ static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args) 
     }
     
     size_t bytes_read = fread(buffer, 1, file_size, file);
-    if (bytes_read < (size_t)file_size) {
+    if (bytes_read < (size_t)file_size && ferror(file)) {
         PRATT_FREE(buffer);
         fclose(file);
         runtime_error(interp, "Could not read entire file '%s'", path);
@@ -3091,7 +3132,7 @@ static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args) 
     }
     
     fclose(file);
-    
+
     ObjString* result = make_heap_string(interp, buffer, bytes_read);
     PRATT_FREE(buffer);
     
@@ -3100,24 +3141,65 @@ static Value builtin_fs_readFile(Interpreter* interp, size_t argc, Value* args) 
 
 static Value builtin_fs_writeFile(Interpreter* interp, size_t argc, Value* args) {
     if (argc < 2 || argc > 3 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
-        runtime_error(interp, "fs.writeFile(path, data, [append]) expects string path and data.");
+        runtime_error(interp, "fs.writeFile(path, data, [options]) expects string path and data.");
         return make_nil();
     }
     
+    // --- Default options ---
+    const char* mode_str = "text";
     bool append = false;
+
+    // --- Parse options ---
     if (argc == 3) {
-        if (!IS_BOOL(args[2])) {
-            runtime_error(interp, "fs.writeFile() 'append' argument must be a boolean.");
+        Value options_val = args[2];
+        if (IS_OBJECT(options_val)) {
+            ObjObject* options_obj = AS_OBJECT(options_val);
+            Value opt_val;
+            
+            // Check for 'mode'
+            ObjString* mode_key = interpreter_intern_string(interp, "mode", 4);
+            if (map_get(&options_obj->map, mode_key, &opt_val) && IS_STRING(opt_val)) {
+                mode_str = AS_CSTRING(opt_val);
+            }
+            
+            // Check for 'append'
+            ObjString* append_key = interpreter_intern_string(interp, "append", 6);
+            if (map_get(&options_obj->map, append_key, &opt_val) && IS_BOOL(opt_val)) {
+                append = AS_BOOL(opt_val);
+            }
+
+        } else if (IS_BOOL(options_val)) {
+            // third argument is a boolean for append
+            append = AS_BOOL(options_val);
+        } else if (!IS_NIL(options_val)) {
+            runtime_error(interp, "fs.writeFile() third argument must be an options object, a boolean, or nil.");
             return make_nil();
         }
-        append = AS_BOOL(args[2]);
     }
     
+    // --- Validate options and determine fopen mode ---
+    bool is_binary;
+    if (strcmp(mode_str, "binary") == 0) {
+        is_binary = true;
+    } else if (strcmp(mode_str, "text") == 0) {
+        is_binary = false;
+    } else {
+        runtime_error(interp, "Invalid mode '%s'. Must be 'text' or 'binary'.", mode_str);
+        return make_nil();
+    }
+    
+    const char* fopen_mode;
+    if (is_binary) {
+        fopen_mode = append ? "ab" : "wb";
+    } else {
+        fopen_mode = append ? "a" : "w";
+    }
+
     const char* path = AS_CSTRING(args[0]);
     ObjString* data = AS_STRING(args[1]);
-    
-    const char* mode = append ? "ab" : "wb";
-    FILE* file = fopen(path, mode);
+
+    // --- Write to file ---
+    FILE* file = fopen(path, fopen_mode);
     if (file == NULL) {
         runtime_error(interp, "Could not open file '%s' for writing: %s", path, strerror(errno));
         return make_bool(false);
