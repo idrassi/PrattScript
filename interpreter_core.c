@@ -172,6 +172,14 @@ static void free_object(Interpreter* interp, Obj* object) {
             reallocate(interp, object, sizeof(ObjEnv), 0);
             break;
         }
+        case OBJ_RESOURCE: {
+            ObjResource* resource = (ObjResource*)object;
+            // Finalizer: ensure the resource is released if the handle is GC'd
+            if (!resource->is_finalized && resource->vtable->finalize) {
+               resource->vtable->finalize(resource->context);
+            }
+            reallocate(interp, object, sizeof(ObjResource), 0);
+        }
     }
 }
 
@@ -239,6 +247,15 @@ static ObjString* make_heap_string(Interpreter* interp, const char* chars, size_
     uint32_t hash = hash_string(chars, length);
     // Don't look up in interner, just allocate.
     return allocate_string_obj(interp, chars, length, hash);
+}
+
+// --- Generic Resource Implementation ---
+static ObjResource* new_resource(Interpreter* interp, void* context, const ResourceVTable* vtable) {
+    ObjResource* resource = (ObjResource*)allocate_object(interp, sizeof(ObjResource), OBJ_RESOURCE);
+    resource->context = context;
+    resource->vtable = vtable;
+    resource->is_finalized = false;
+    return resource;
 }
 
 // --- Value Creation Helpers ---
@@ -485,6 +502,8 @@ static void blacken_object(Interpreter* interp, Obj* object) {
             mark_map(interp, &env->table);          // Mark everything in its variable table.
             break;
         }
+        case OBJ_RESOURCE: // No outgoing references to mark from a resource object
+            break;
     }
 }
 
@@ -699,6 +718,15 @@ static ObjString* value_to_string(Interpreter* interp, Value value) {
                     memcpy(buffer, str, length + 1);
                     break;
                 }
+                case OBJ_RESOURCE: {
+                    ObjResource* res = AS_RESOURCE(value);
+                    const char* status = res->is_finalized ? " (closed)" : "";
+                    length = snprintf(NULL, 0, "<resource %s%s>", res->vtable->type_name, status);
+                    buffer = PRATT_MALLOC(length + 1);
+                    if (!buffer) goto oom;
+                    snprintf(buffer, length + 1, "<resource %s%s>", res->vtable->type_name, status);
+                    break;
+                }
             }
             break;
         }
@@ -805,6 +833,10 @@ static Value builtin_fs_writeFile(Interpreter* interp, size_t argc, Value* args)
 static Value builtin_fs_exists(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_fs_listDir(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_fs_remove(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_open(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_read(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_write(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_fs_close(Interpreter* interp, size_t argc, Value* args);
 
 // path object
 static Value builtin_path_join(Interpreter* interp, size_t argc, Value* args);
@@ -824,6 +856,11 @@ static Value builtin_date_format(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_date_parse(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_date_utc(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_date_local(Interpreter* interp, size_t argc, Value* args);
+
+// resource object
+static Value builtin_resource_close(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_resource_type(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_resource_is_closed(Interpreter* interp, size_t argc, Value* args);
 
 // *********************** JSON BUILTINS ***********************
 static Value builtin_json_parse(Interpreter* interp, size_t argc, Value* args);
@@ -973,6 +1010,11 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &fs_object->map, interpreter_intern_string(interp, "exists", 6), make_builtin(builtin_fs_exists));
     map_set(interp, &fs_object->map, interpreter_intern_string(interp, "listDir", 7), make_builtin(builtin_fs_listDir));
     map_set(interp, &fs_object->map, interpreter_intern_string(interp, "remove", 6), make_builtin(builtin_fs_remove));
+    // File functions operate on ObjResource
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "open", 4), make_builtin(builtin_fs_open));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "read", 4), make_builtin(builtin_fs_read));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "write", 5), make_builtin(builtin_fs_write));
+    map_set(interp, &fs_object->map, interpreter_intern_string(interp, "close", 5), make_builtin(builtin_resource_close));
     env_define(interp, interp->env, interpreter_intern_string(interp, "fs", 2), make_obj((Obj*)fs_object));
     pop_root(interp);
 
@@ -1005,6 +1047,15 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &date_object->map, interpreter_intern_string(interp, "utc", 3), make_builtin(builtin_date_utc));
     map_set(interp, &date_object->map, interpreter_intern_string(interp, "local", 5), make_builtin(builtin_date_local));
     env_define(interp, interp->env, interpreter_intern_string(interp, "date", 4), make_obj((Obj*)date_object));
+    pop_root(interp);
+
+    // --- Generic Resource Object ---
+    ObjObject* resource_object = new_object(interp);
+    push_root(interp, (Obj*)resource_object);
+    map_set(interp, &resource_object->map, interpreter_intern_string(interp, "close", 5), make_builtin(builtin_resource_close));
+    map_set(interp, &resource_object->map, interpreter_intern_string(interp, "type", 4), make_builtin(builtin_resource_type));
+    map_set(interp, &resource_object->map, interpreter_intern_string(interp, "isClosed", 8), make_builtin(builtin_resource_is_closed));
+    env_define(interp, interp->env, interpreter_intern_string(interp, "resource", 8), make_obj((Obj*)resource_object));
     pop_root(interp);
     
     // --- JSON Object ---
@@ -1840,6 +1891,12 @@ static void print_value_internal(Value value, PrintVisitor* visitor) {
                     break;
                 }
                 case OBJ_ENV: printf("[environment]"); break;
+                case OBJ_RESOURCE: {
+                    ObjResource* res = AS_RESOURCE(value);
+                    const char* status = res->is_finalized ? " (closed)" : "";
+                    printf("<resource %s%s>", res->vtable->type_name, status);
+                    break;
+                }
             }
 
             // Un-mark it after we are done printing its contents.
@@ -2009,6 +2066,7 @@ static Value builtin_typeof(Interpreter *interp, size_t argc, Value* args) {
                 case OBJ_ARRAY:    type_str = "array"; break;
                 case OBJ_OBJECT:   type_str = "object"; break;
                 case OBJ_ENV:      type_str = "environment"; break;
+                case OBJ_RESOURCE: type_str = "resource"; break;
                 default:           type_str = "unknown_object"; break;
             }
             break;
@@ -3317,6 +3375,144 @@ static Value builtin_fs_remove(Interpreter* interp, size_t argc, Value* args) {
     // If we get here, the operation failed.
     runtime_error(interp, "Could not remove '%s': %s", path, strerror(errno));
     return make_bool(false);
+}
+
+static const char* FILE_RESOURCE_TYPE_NAME = "core.file";
+
+static void file_resource_finalize(void* context) {
+    if (context) {
+        fclose((FILE*)context);
+    }
+}
+
+static const ResourceVTable g_file_resource_vtable = {
+    .type_name = "core.file", // Namespaced for clarity and safety
+    .finalize = file_resource_finalize,
+};
+
+// --- End File Resource Implementation ---
+static Value builtin_fs_open(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "fs.open(path, mode) expects two string arguments.");
+        return make_nil();
+    }
+
+    const char* path = AS_CSTRING(args[0]);
+    const char* mode = AS_CSTRING(args[1]);
+
+    FILE* file = fopen(path, mode);
+    if (file == NULL) {
+        return make_nil(); // Return nil on failure, don't raise an error
+    }
+
+    ObjResource* resource = new_resource(interp, file, &g_file_resource_vtable);
+
+    return make_obj((Obj*)resource);
+}
+
+static Value builtin_fs_read(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_RESOURCE(args[0]) || !IS_INT(args[1])) {
+        runtime_error(interp, "fs.read(resource, numBytes) expects a resource and an integer.");
+        return make_nil();
+    }
+
+    ObjResource* res = AS_RESOURCE(args[0]);
+    if (res->vtable != &g_file_resource_vtable) {
+        runtime_error(interp, "fs.read() requires a file resource, but got a '%s' resource.", res->vtable->type_name);
+        return make_nil();
+    }
+    if (res->is_finalized) {
+        runtime_error(interp, "Cannot read from a closed file resource.");
+        return make_nil();
+    }
+
+    int64_t num_bytes = AS_INT(args[1]);
+    if (num_bytes < 0) {
+        runtime_error(interp, "Number of bytes to read cannot be negative.");
+        return make_nil();
+    }
+    if (num_bytes == 0) {
+        return make_obj((Obj*)make_heap_string(interp, "", 0));
+    }
+
+    char* buffer = PRATT_MALLOC(num_bytes);
+    if (buffer == NULL) {
+        runtime_error(interp, "Out of memory allocating read buffer.");
+        return make_nil();
+    }
+
+    FILE* file = (FILE*)res->context;
+    size_t bytes_read = fread(buffer, 1, (size_t)num_bytes, file);
+
+    ObjString* result = make_heap_string(interp, buffer, bytes_read);
+    PRATT_FREE(buffer);
+
+    return make_obj((Obj*)result);
+}
+
+static Value builtin_fs_write(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_RESOURCE(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "fs.write(resource, data) expects a resource and a string.");
+        return make_nil();
+    }
+
+    ObjResource* res = AS_RESOURCE(args[0]);
+    if (res->vtable != &g_file_resource_vtable) {
+        runtime_error(interp, "fs.write() requires a file resource, but got a '%s' resource.", res->vtable->type_name);
+        return make_nil();
+    }
+    if (res->is_finalized) {
+        runtime_error(interp, "Cannot write to a closed file resource.");
+        return make_nil();
+    }
+
+    ObjString* data = AS_STRING(args[1]);
+    FILE* file = (FILE*)res->context;
+    size_t bytes_written = fwrite(data->chars, 1, data->length, file);
+    fflush(file); // Ensure data is written
+
+    return make_int((int64_t)bytes_written);
+}
+
+// --- Generic Resource Builtins ---
+
+static Value builtin_resource_close(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_RESOURCE(args[0])) {
+        runtime_error(interp, "resource.close() expects a resource argument.");
+        return make_nil();
+    }
+
+    ObjResource* res = AS_RESOURCE(args[0]);
+    if (res->is_finalized) {
+        return make_bool(true); // Idempotent
+    }
+
+    if (res->vtable->finalize) {
+        res->vtable->finalize(res->context);
+    }
+    res->is_finalized = true;
+    res->context = NULL; // Prevent use after close
+
+    return make_bool(true);
+}
+
+static Value builtin_resource_type(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_RESOURCE(args[0])) {
+        runtime_error(interp, "resource.type() expects a resource argument.");
+        return make_nil();
+    }
+    ObjResource* res = AS_RESOURCE(args[0]);
+   const char* type_name = res->vtable->type_name;
+    return make_obj((Obj*)make_heap_string(interp, type_name, strlen(type_name)));
+}
+
+static Value builtin_resource_is_closed(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_RESOURCE(args[0])) {
+        runtime_error(interp, "resource.isClosed() expects a resource argument.");
+       return make_nil();
+    }
+    ObjResource* res = AS_RESOURCE(args[0]);
+    return make_bool(res->is_finalized);
 }
 
 // --- Path Object ---

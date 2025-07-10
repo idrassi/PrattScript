@@ -2784,6 +2784,129 @@ static void run_json_tests() {
     run_interpreter_error_test("JSON Error: stringify wrong pretty type", "json.stringify({}, 1);", "second argument must be a boolean");
 }
 
+static void run_resource_and_stream_tests() {
+    printf("\n--- Generic Resource & File Stream Tests ---\n");
+
+   // Setup: create a temporary directory for file operations
+#ifdef _WIN32
+    _mkdir("test_temp_dir");
+#else
+    mkdir("test_temp_dir", 0777);
+#endif
+
+    // --- Happy Path Tests ---
+    run_interpreter_test("Resource: fs.open creates a resource",
+        "var f = fs.open(\"test_temp_dir/res_test.txt\", \"w\");"
+        "println(typeof(f));"
+        "resource.close(f);",
+       "resource\n"
+    );
+
+    run_interpreter_test("Resource: resource.type() for file",
+        "var f = fs.open(\"test_temp_dir/res_test.txt\", \"w\");"
+        "println(resource.type(f));"
+        "resource.close(f);",
+       "core.file\n"
+    );
+
+    run_interpreter_test("Stream: write and read",
+        "var f = fs.open(\"test_temp_dir/stream_test.txt\", \"w+\");"
+        "var written = fs.write(f, \"hello stream\");"
+       "println(\"wrote: \" + written);"
+        // Re-open to read from start (no seek yet)
+        "resource.close(f);"
+       "f = fs.open(\"test_temp_dir/stream_test.txt\", \"r\");"
+        "var content = fs.read(f, 100);"
+        "println(content);"
+        "resource.close(f);",
+        "wrote: 12\nhello stream\n"
+    );
+    run_interpreter_test("Stream: read in chunks",
+        "fs.writeFile(\"test_temp_dir/chunk_test.txt\", \"1234567890\");"
+        "var f = fs.open(\"test_temp_dir/chunk_test.txt\", \"r\");"
+        "var c1 = fs.read(f, 4);"
+        "var c2 = fs.read(f, 4);"
+        "var c3 = fs.read(f, 4);" // reads remaining 2 bytes
+        "var c4 = fs.read(f, 4);" // reads 0 bytes (EOF)
+        "println(c1);"
+        "println(c2);"
+        "println(c3);"
+        "println(len(c4));"
+       "resource.close(f);",
+        "1234\n5678\n90\n0\n"
+    );
+
+    run_interpreter_test("Resource: open failure returns nil",
+        "var f = fs.open(\"test_temp_dir/non/existent/path.txt\", \"r\");"
+       "println(f == nil);",
+        "true\n"
+    );
+
+    run_interpreter_test("Resource: isClosed() status",
+        "var f = fs.open(\"test_temp_dir/res_test.txt\", \"w\");"
+       "println(resource.isClosed(f));"
+        "resource.close(f);"
+        "println(resource.isClosed(f));"
+        "resource.close(f);" // should be idempotent
+        "println(resource.isClosed(f));",
+        "false\ntrue\ntrue\n"
+    );
+    // --- Error Handling Tests ---
+    run_interpreter_error_test("Resource: fs.read with wrong resource type",
+        "var o = {}; fs.read(o, 10);",
+        "fs.read(resource, numBytes) expects a resource and an integer."
+    );
+
+    run_interpreter_error_test("Resource: fs.read on closed resource",
+        "var f = fs.open(\"test_temp_dir/err_test.txt\", \"w\");"
+       "resource.close(f);"
+        "fs.read(f, 10);",
+        "Cannot read from a closed file resource."
+    );
+
+   run_interpreter_error_test("Resource: fs.write on closed resource",
+        "var f = fs.open(\"test_temp_dir/err_test.txt\", \"w\");"
+        "resource.close(f);"
+        "fs.write(f, \"data\");",
+        "Cannot write to a closed file resource."
+    );
+
+    run_interpreter_error_test("Stream: fs.read negative bytes",
+        "var f = fs.open(\"test_temp_dir/err_test.txt\", \"r\");"
+        "fs.read(f, -1);"
+        "resource.close(f);",
+        "Number of bytes to read cannot be negative"
+   );
+
+    // --- GC Finalization Test ---
+    run_interpreter_test("Resource: GC finalizes unclosed file",
+        "{"
+        "  var f = fs.open(\"test_temp_dir/gc_test.txt\", \"w\");"
+       "  fs.write(f, \"written\");"
+        "}" // f is now out of scope
+        "gc.collect();" // Should trigger finalizer and close the file
+        // If the file wasn't closed, the data might not be flushed to disk.
+        // We can't 100% guarantee flush on fclose, but this is a good smoke test.
+        "println(fs.readFile(\"test_temp_dir/gc_test.txt\"));",
+        "written\n"
+   );
+
+    // Teardown
+    // This part is a bit tricky since we can't easily execute shell commands.
+    // We'll rely on the OS to clean up the temp dir later.
+    // For a production test suite, a shell script wrapper would handle this.
+    remove("test_temp_dir/res_test.txt");
+    remove("test_temp_dir/stream_test.txt");
+    remove("test_temp_dir/chunk_test.txt");
+    remove("test_temp_dir/err_test.txt");
+    remove("test_temp_dir/gc_test.txt");
+#ifdef _WIN32
+    _rmdir("test_temp_dir");
+#else
+    rmdir("test_temp_dir");
+#endif
+}
+
 /*── Run all tests ───────────────────────────────────────────────────────*/
 static void run_all_tests() {
     printf("PrattLib Comprehensive Test Suite\n");
@@ -2981,6 +3104,9 @@ static void run_all_tests() {
     
     // Run JSON tests
     run_json_tests();
+
+    // --- Test function for streaming I/O ---
+    run_resource_and_stream_tests();
 
     // Summary
     printf("\n==================================\n");

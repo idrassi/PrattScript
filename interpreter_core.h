@@ -47,7 +47,8 @@ typedef enum {
     OBJ_FUNCTION,
     OBJ_ARRAY,
     OBJ_OBJECT,
-    OBJ_ENV 
+    OBJ_ENV,
+    OBJ_RESOURCE
 } ObjType;
 
 typedef struct Obj {
@@ -63,6 +64,24 @@ typedef struct {
     uint32_t hash;
     char chars[]; // Flexible array member
 } ObjString;
+
+
+// --- Generic External Resource ---
+// The v-table defines the "class" of a resource.
+typedef struct {
+    // A unique, namespaced name for this resource type, e.g., "core.file".
+    const char* type_name;
+    // The function to call to release the resource.
+    void (*finalize)(void* context);
+} ResourceVTable;
+
+// The generic resource object managed by the GC.
+typedef struct {
+    Obj obj;
+    void* context;                  // Pointer to the actual C resource (e.g., FILE*)
+    const ResourceVTable* vtable;   // The "class" implementation for this resource
+    bool is_finalized;
+} ObjResource;
 
 // Forward declarations
 typedef struct Function Function;
@@ -123,6 +142,7 @@ typedef struct Value {
 #define IS_ARRAY(value)   (IS_OBJ(value) && OBJ_TYPE(value) == OBJ_ARRAY)
 #define IS_OBJECT(value)  (IS_OBJ(value) && OBJ_TYPE(value) == OBJ_OBJECT)
 #define IS_ENV(value)     (IS_OBJ(value) && OBJ_TYPE(value) == OBJ_ENV)
+#define IS_RESOURCE(value)(IS_OBJ(value) && OBJ_TYPE(value) == OBJ_RESOURCE)
 
 // Macros to cast an Obj pointer to its specific type
 #define AS_STRING(value)    ((ObjString*)AS_OBJ(value))
@@ -131,6 +151,7 @@ typedef struct Value {
 #define AS_ARRAY(value)     ((ObjArray*)AS_OBJ(value))
 #define AS_OBJECT(value)    ((ObjObject*)AS_OBJ(value))
 #define AS_ENV(value)       ((ObjEnv*)AS_OBJ(value))
+#define AS_RESOURCE(value)  ((ObjResource*)AS_OBJ(value))
 
 
 // --- Hash Map for variables (uses pointer keys) ---
