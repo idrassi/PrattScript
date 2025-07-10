@@ -2393,20 +2393,80 @@ static void run_path_tests() {
 
 static void run_os_tests() {
     printf("\n--- OS Built-in Tests ---\n");
+    
+    // --- os.platform ---
     run_interpreter_test("os.platform",
         "println(len(os.platform()) > 0);",
         "true\n");
 
-    run_interpreter_test("os.cwd",
-        "println(len(os.cwd()) > 0);",
+    // --- os.getenv ---
+    run_interpreter_test("os.getenv finds existing var (PATH)",
+        "println(len(os.getenv(\"PATH\")) > 0);", // PATH should exist on most systems
         "true\n");
+
+    run_interpreter_test("os.getenv non-existent var returns nil",
+        "println(os.getenv(\"THIS_VAR_SHOULD_NOT_EXIST_12345\"));",
+        "nil\n");
     
-    run_interpreter_test("os.env",
-        "println(os.env(\"NON_EXISTENT_VAR_12345\", \"default\"));",
-        "default\n");
+    run_interpreter_error_test("os.getenv error (wrong argc)", "os.getenv();", "expects a single string argument");
+    run_interpreter_error_test("os.getenv error (wrong type)", "os.getenv(123);", "expects a single string argument");
 
+    // --- os.setenv / os.unsetenv ---
+    run_interpreter_test("os.setenv, os.getenv, and os.unsetenv work together",
+        "var success_set = os.setenv(\"PRATTSCRIPT_TEST_VAR\", \"hello\");"
+        "println(success_set);"
+        "println(os.getenv(\"PRATTSCRIPT_TEST_VAR\"));"
+        "var success_unset = os.unsetenv(\"PRATTSCRIPT_TEST_VAR\");"
+        "println(success_unset);"
+        "println(os.getenv(\"PRATTSCRIPT_TEST_VAR\"));",
+        "true\nhello\ntrue\nnil\n");
+
+    run_interpreter_error_test("os.setenv error (wrong argc)", "os.setenv(\"a\");", "expects two string arguments");
+    run_interpreter_error_test("os.setenv error (wrong type)", "os.setenv(\"a\", 123);", "expects two string arguments");
+    run_interpreter_error_test("os.unsetenv error (wrong argc)", "os.unsetenv();", "expects a single string argument");
+
+    // --- os.getcwd / os.setcwd ---
+    // C-level setup for the CWD test
+    const char* temp_dir = "prattscript_cwd_test_dir";
+#ifdef _WIN32
+    _mkdir(temp_dir);
+#else
+    mkdir(temp_dir, 0777);
+#endif
+    
+    // We must build the source string and expected output dynamically to include the temp dir name.
+    char setcwd_source[512];
+    snprintf(setcwd_source, sizeof(setcwd_source),
+        "var old_cwd = os.getcwd();"
+        "var success_set = os.setcwd(\"%s\");"
+        "println(success_set);"                         // Should be true
+        "var new_cwd = os.getcwd();"
+        "println(path.basename(new_cwd));"              // Check we are in the new dir
+        "var success_reset = os.setcwd(old_cwd);"       // Change back
+        "println(success_reset);"                       // Should be true
+        "println(path.basename(os.getcwd()) != \"%s\");",// Check we are back
+        temp_dir, temp_dir);
+    
+    char setcwd_expected[128];
+    snprintf(setcwd_expected, sizeof(setcwd_expected), "true\n%s\ntrue\ntrue\n", temp_dir);
+        
+    run_interpreter_test("os.getcwd and os.setcwd", setcwd_source, setcwd_expected);
+
+    run_interpreter_error_test("os.setcwd error (non-existent dir)", 
+        "os.setcwd(\"this_dir_really_should_not_exist_abc123\");", 
+        "Could not change directory");
+    run_interpreter_error_test("os.setcwd error (wrong argc)", "os.setcwd();", "expects a single string argument");
+    run_interpreter_error_test("os.setcwd error (wrong type)", "os.setcwd(true);", "expects a single string argument");
+
+    // C-level teardown for the CWD test
+#ifdef _WIN32
+    _rmdir(temp_dir);
+#else
+    rmdir(temp_dir);
+#endif
+
+    // --- os.exec ---
     run_interpreter_error_test("os.exec error", "os.exec(123);", "expects a string command");
-
 #ifdef _WIN32
     run_interpreter_test("os.exec", "println(os.exec(\"echo test > NUL\"));", "0\n");
 #else

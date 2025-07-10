@@ -41,7 +41,7 @@
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #else
-#include <unistd.h> // For access, unlink, getcwd
+#include <unistd.h> // For access, unlink, getcwd, chdir, setenv, unsetenv
 #include <sys/wait.h>
 #include <dirent.h>
 #endif
@@ -845,9 +845,12 @@ static Value builtin_path_dirname(Interpreter* interp, size_t argc, Value* args)
 static Value builtin_path_extname(Interpreter* interp, size_t argc, Value* args);
 
 // os object
-static Value builtin_os_env(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_getenv(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_setenv(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_unsetenv(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_os_exec(Interpreter* interp, size_t argc, Value* args);
-static Value builtin_os_cwd(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_getcwd(Interpreter* interp, size_t argc, Value* args);
+static Value builtin_os_setcwd(Interpreter* interp, size_t argc, Value* args);
 static Value builtin_os_platform(Interpreter* interp, size_t argc, Value* args);
 
 // date object
@@ -1031,9 +1034,12 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     // OS Object
     ObjObject* os_object = new_object(interp);
     push_root(interp, (Obj*)os_object);
-    map_set(interp, &os_object->map, interpreter_intern_string(interp, "env", 3), make_builtin(builtin_os_env));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "getenv", 6), make_builtin(builtin_os_getenv));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "setenv", 6), make_builtin(builtin_os_setenv));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "unsetenv", 8), make_builtin(builtin_os_unsetenv));
     map_set(interp, &os_object->map, interpreter_intern_string(interp, "exec", 4), make_builtin(builtin_os_exec));
-    map_set(interp, &os_object->map, interpreter_intern_string(interp, "cwd", 3), make_builtin(builtin_os_cwd));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "getcwd", 6), make_builtin(builtin_os_getcwd));
+    map_set(interp, &os_object->map, interpreter_intern_string(interp, "setcwd", 6), make_builtin(builtin_os_setcwd));
     map_set(interp, &os_object->map, interpreter_intern_string(interp, "platform", 8), make_builtin(builtin_os_platform));
     env_define(interp, interp->env, interpreter_intern_string(interp, "os", 2), make_obj((Obj*)os_object));
     pop_root(interp);
@@ -3686,25 +3692,6 @@ static Value builtin_path_extname(Interpreter* interp, size_t argc, Value* args)
 
 // --- OS Object ---
 
-static Value builtin_os_env(Interpreter* interp, size_t argc, Value* args) {
-    if (argc < 1 || argc > 2 || !IS_STRING(args[0])) {
-        runtime_error(interp, "os.env(name, [default]) expects a string name.");
-        return make_nil();
-    }
-    
-    const char* name = AS_CSTRING(args[0]);
-    const char* value = getenv(name);
-    
-    if (value != NULL) {
-        return make_obj((Obj*)make_heap_string(interp, value, strlen(value)));
-    }
-    
-    if (argc == 2) {
-        return args[1];
-    }
-    
-    return make_nil();
-}
 
 static Value builtin_os_exec(Interpreter* interp, size_t argc, Value* args) {
     if (argc != 1 || !IS_STRING(args[0])) {
@@ -3726,13 +3713,98 @@ static Value builtin_os_exec(Interpreter* interp, size_t argc, Value* args) {
 #endif
 }
 
-static Value builtin_os_cwd(Interpreter* interp, size_t argc, Value* args) {
+static Value builtin_os_platform(Interpreter* interp, size_t argc, Value* args) {
     if (argc != 0) {
-        runtime_error(interp, "os.cwd() expects 0 arguments.");
+        runtime_error(interp, "os.platform() expects 0 arguments.");
+        return make_nil();
+    }
+
+#if defined(_WIN32)
+    const char* platform = "windows";
+#elif defined(__linux__)
+    const char* platform = "linux";
+#elif defined(__APPLE__) && defined(__MACH__)
+    const char* platform = "darwin";
+#elif defined(__FreeBSD__)
+    const char* platform = "freebsd";
+#else
+    const char* platform = "unknown";
+#endif
+
+    return make_obj((Obj*)make_heap_string(interp, platform, strlen(platform)));
+}
+
+static Value builtin_os_getenv(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "os.getenv(name) expects a single string argument.");
         return make_nil();
     }
     
-    char buffer[1024];
+    const char* name = AS_CSTRING(args[0]);
+    const char* value = getenv(name);
+    
+    if (value != NULL) {
+        return make_obj((Obj*)make_heap_string(interp, value, strlen(value)));
+    }
+    
+    return make_nil(); // Return nil if not found
+}
+
+static Value builtin_os_setenv(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 2 || !IS_STRING(args[0]) || !IS_STRING(args[1])) {
+        runtime_error(interp, "os.setenv(name, value) expects two string arguments.");
+        return make_nil();
+    }
+
+    const char* name = AS_CSTRING(args[0]);
+    const char* value = AS_CSTRING(args[1]);
+    int result;
+
+#ifdef _WIN32
+    result = _putenv_s(name, value);
+#else
+    result = setenv(name, value, 1); // 1 to overwrite
+#endif
+
+    if (result != 0) {
+        runtime_error(interp, "Could not set environment variable '%s': %s", name, strerror(errno));
+        return make_nil();
+    }
+
+    return make_bool(true);
+}
+
+static Value builtin_os_unsetenv(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "os.unsetenv(name) expects a single string argument.");
+        return make_nil();
+    }
+
+    const char* name = AS_CSTRING(args[0]);
+    int result;
+
+#ifdef _WIN32
+    // Windows unsets by setting to an empty string.
+    result = _putenv_s(name, "");
+#else
+    result = unsetenv(name);
+#endif
+    
+    if (result != 0) {
+        runtime_error(interp, "Could not unset environment variable '%s': %s", name, strerror(errno));
+        return make_nil();
+    }
+
+    return make_bool(true);
+}
+
+static Value builtin_os_getcwd(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 0) {
+        runtime_error(interp, "os.getcwd() expects 0 arguments.");
+        return make_nil();
+    }
+    
+    char buffer[1024]; // A reasonable fixed size buffer
 #ifdef _WIN32
     if (_getcwd(buffer, sizeof(buffer)) == NULL) {
         runtime_error(interp, "Could not get current working directory: %s", strerror(errno));
@@ -3747,25 +3819,26 @@ static Value builtin_os_cwd(Interpreter* interp, size_t argc, Value* args) {
     return make_obj((Obj*)make_heap_string(interp, buffer, strlen(buffer)));
 }
 
-static Value builtin_os_platform(Interpreter* interp, size_t argc, Value* args) {
-    if (argc != 0) {
-        runtime_error(interp, "os.platform() expects 0 arguments.");
+static Value builtin_os_setcwd(Interpreter* interp, size_t argc, Value* args) {
+    if (argc != 1 || !IS_STRING(args[0])) {
+        runtime_error(interp, "os.setcwd(path) expects a single string argument.");
         return make_nil();
     }
 
-#if defined(_WIN32)
-    const char* platform = "win32";
-#elif defined(__linux__)
-    const char* platform = "linux";
-#elif defined(__APPLE__) && defined(__MACH__)
-    const char* platform = "darwin";
-#elif defined(__FreeBSD__)
-    const char* platform = "freebsd";
+    const char* path = AS_CSTRING(args[0]);
+    int result;
+#ifdef _WIN32
+    result = _chdir(path);
 #else
-    const char* platform = "unknown";
+    result = chdir(path);
 #endif
 
-    return make_obj((Obj*)make_heap_string(interp, platform, strlen(platform)));
+    if (result != 0) {
+        runtime_error(interp, "Could not change directory to '%s': %s", path, strerror(errno));
+        return make_nil();
+    }
+
+    return make_bool(true);
 }
 
 // --- Date Object ---
