@@ -332,9 +332,9 @@ ASTNode *default_object_prefix(Parser *p) {
 }
 
 
-/*── unary: prefix '-' ─────────────────────────────────────────────────*/
+/*── unary: prefix '-' or '~' ───────────────────────────────────────────*/
 ASTNode *default_unary_prefix(Parser *p) {
-    PrattToken op = p->cur; // The dispatcher consumed the '-'
+    PrattToken op = p->cur; // The dispatcher consumed the '-' or '~'
     ASTNode *child = parse_precedence(p, PREC_UNARY);
     if (!child) return NULL;
     ASTNode *n = new_node(p, AST_UNARY);
@@ -915,6 +915,11 @@ const char *default_token_name(PrattTokenType t) {
         case T_PIPE_PIPE: return "'||'";
         case T_QUESTION: return "'?'";
         case T_COLON: return "':'";
+        case T_AMP: return "'&'";
+        case T_PIPE: return "'|'";
+        case T_TILDE: return "'~'";
+        case T_LESS_LESS: return "'<<'";
+        case T_GREATER_GREATER: return "'>>'";
 
         case T_DOT:       return "'.'";
         case T_COMMA:     return "','";
@@ -952,12 +957,20 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     // Assignment is handled by expression_statement.
     [T_EQUAL]     = PRATT_RULE(NULL, default_assignment_infix, PREC_ASSIGNMENT, 0),
 
+    /* Unary and Arithmetic Operators */
     [T_MINUS]     = PRATT_RULE(default_unary_prefix,    default_binary_infix, PREC_TERM,   PREC_TERM),
     [T_PLUS]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_TERM,   PREC_TERM),
     [T_STAR]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_SLASH]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_PERCENT]   = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
-    [T_CARET]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_POWER,  PREC_POWER-1),
+
+    /* Bitwise Operators */
+    [T_TILDE]     = PRATT_RULE(default_unary_prefix,    NULL,                 PREC_UNARY,  0),
+    [T_LESS_LESS] = PRATT_RULE(NULL,                    default_binary_infix, PREC_SHIFT,  PREC_SHIFT),
+    [T_GREATER_GREATER] = PRATT_RULE(NULL,              default_binary_infix, PREC_SHIFT,  PREC_SHIFT),
+    [T_AMP]       = PRATT_RULE(NULL,                    default_binary_infix, PREC_BITWISE_AND, PREC_BITWISE_AND),
+    [T_CARET]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_BITWISE_XOR, PREC_BITWISE_XOR),
+    [T_PIPE]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_BITWISE_OR,  PREC_BITWISE_OR),
 
     /* Comparisons (left-associative) */
     [T_EQUAL_EQUAL]   = PRATT_RULE(NULL, default_binary_infix, PREC_COMPARISON, PREC_COMPARISON),

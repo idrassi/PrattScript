@@ -174,11 +174,14 @@ struct Statement {
 #define PREC_CONDITIONAL 15  /* ?: */
 #define PREC_LOGICAL_OR  16  /* || */
 #define PREC_LOGICAL_AND 17  /* && */
-#define PREC_COMPARISON  18  /* == != < > <= >= */
-#define PREC_TERM        20  /* + - */
+#define PREC_BITWISE_OR  18  /* | */
+#define PREC_BITWISE_XOR 19  /* ^ */
+#define PREC_BITWISE_AND 20  /* & */
+#define PREC_COMPARISON  21  /* == != < > <= >= */
+#define PREC_SHIFT       22  /* << >> */
+#define PREC_TERM        23  /* + - */
 #define PREC_FACTOR      30  /* * / % */
-#define PREC_UNARY       40  /* - ! */
-#define PREC_POWER       50  /* ^ (right-associative, tighter than unary) */
+#define PREC_UNARY       40  /* - ! ~ */
 #define PREC_CALL        60  /* () . [] */
 #define PREC_PRIMARY     70
 

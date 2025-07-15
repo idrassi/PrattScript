@@ -55,6 +55,9 @@ typedef enum {
     T_AMP_AMP, T_PIPE_PIPE,
     T_QUESTION, T_COLON,
 
+    /* Bitwise Operators */
+    T_AMP, T_PIPE, T_TILDE, T_LESS_LESS, T_GREATER_GREATER,
+
     T_DOT,
     T_COMMA,
     T_LPAREN, T_RPAREN, T_LBRACE, T_RBRACE, T_SEMICOLON,

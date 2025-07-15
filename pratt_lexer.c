@@ -313,6 +313,7 @@ PrattToken pratt_lexer_next(void *ctx) {
         case '/': return make_token(lex, T_SLASH,     start_ptr, 1);
         case '%': return make_token(lex, T_PERCENT,   start_ptr, 1);
         case '^': return make_token(lex, T_CARET,     start_ptr, 1);
+        case '~': return make_token(lex, T_TILDE,     start_ptr, 1);
         case '(': return make_token(lex, T_LPAREN,    start_ptr, 1);
         case ')': return make_token(lex, T_RPAREN,    start_ptr, 1);
         case '{': return make_token(lex, T_LBRACE,    start_ptr, 1);
@@ -332,16 +333,18 @@ PrattToken pratt_lexer_next(void *ctx) {
             return make_token(lex, T_EQUAL, start_ptr, 1);
         case '<':
             if (lexer_peek(lex) == '=') { advance_char(lex); return make_token(lex, T_LESS_EQUAL, start_ptr, 2); }
+            if (lexer_peek(lex) == '<') { advance_char(lex); return make_token(lex, T_LESS_LESS, start_ptr, 2); }
             return make_token(lex, T_LESS, start_ptr, 1);
         case '>':
             if (lexer_peek(lex) == '=') { advance_char(lex); return make_token(lex, T_GREATER_EQUAL, start_ptr, 2); }
+            if (lexer_peek(lex) == '>') { advance_char(lex); return make_token(lex, T_GREATER_GREATER, start_ptr, 2); }
             return make_token(lex, T_GREATER, start_ptr, 1);
         case '&':
             if (lexer_peek(lex) == '&') { advance_char(lex); return make_token(lex, T_AMP_AMP, start_ptr, 2); }
-            break;
+            return make_token(lex, T_AMP, start_ptr, 1);
         case '|':
             if (lexer_peek(lex) == '|') { advance_char(lex); return make_token(lex, T_PIPE_PIPE, start_ptr, 2); }
-            break;
+            return make_token(lex, T_PIPE, start_ptr, 1);
 
         // Call the generalized function for both quote types.
         case '"':

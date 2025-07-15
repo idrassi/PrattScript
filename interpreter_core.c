@@ -1312,17 +1312,31 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
         case AST_UNARY: {
             ExecResult right_res = eval(interp, node->as.unary.child);
             if (right_res.status != EXEC_OK) return right_res;
-
             Value right = right_res.value;
-            if (IS_INT(right)) {
-                return OK_RESULT(make_int(-AS_INT(right)));
+
+            switch (node->as.unary.op.type) {
+                case T_MINUS:
+                    if (IS_INT(right)) {
+                        return OK_RESULT(make_int(-AS_INT(right)));
+                    }
+                    if (IS_DOUBLE(right)) {
+                        return OK_RESULT(make_double(-AS_DOUBLE(right)));
+                    }
+                    runtime_error(interp, "Operand for '-' must be a number.");
+                    return ERROR_RESULT();
+                
+                case T_TILDE:
+                    if (!IS_INT(right)) {
+                        runtime_error(interp, "Operand for '~' must be an integer.");
+                        return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(~AS_INT(right)));
+                
+                default:
+                    // Should be unreachable if parser is correct.
+                    runtime_error(interp, "Unsupported unary operator.");
+                    return ERROR_RESULT();
             }
-            if (IS_DOUBLE(right)) {
-                return OK_RESULT(make_double(-AS_DOUBLE(right)));
-            }
-            
-            runtime_error(interp, "Operand must be a number for unary '-'.");
-            return ERROR_RESULT();
         }
         case AST_BINARY: {
             if (node->as.binary.op.type == T_AMP_AMP) {
@@ -1463,6 +1477,47 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                     if (r_mod == 0.0) { runtime_error(interp, "Modulo by zero."); return ERROR_RESULT(); }
                     return OK_RESULT(make_double(fmod(AS_NUMBER(left), r_mod)));
                 
+                // --- Bitwise Operators ---
+                case T_AMP:
+                    if (!IS_INT(left) || !IS_INT(right)) {
+                        runtime_error(interp, "Operands for '&' must be integers."); return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(AS_INT(left) & AS_INT(right)));
+                
+                case T_PIPE:
+                    if (!IS_INT(left) || !IS_INT(right)) {
+                        runtime_error(interp, "Operands for '|' must be integers."); return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(AS_INT(left) | AS_INT(right)));
+                
+                case T_CARET:
+                    if (!IS_INT(left) || !IS_INT(right)) {
+                        runtime_error(interp, "Operands for '^' must be integers."); return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(AS_INT(left) ^ AS_INT(right)));
+
+                case T_LESS_LESS:
+                    if (!IS_INT(left) || !IS_INT(right)) {
+                        runtime_error(interp, "Operands for '<<' must be integers."); return ERROR_RESULT();
+                    }
+                    int64_t r_shift_left = AS_INT(right);
+                    if (r_shift_left < 0 || r_shift_left >= 64) {
+                        runtime_error(interp, "Right operand for '<<' must be in the range [0, 63].");
+                        return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(AS_INT(left) << r_shift_left));
+
+                case T_GREATER_GREATER:
+                    if (!IS_INT(left) || !IS_INT(right)) {
+                        runtime_error(interp, "Operands for '>>' must be integers."); return ERROR_RESULT();
+                    }
+                    int64_t r_shift_right = AS_INT(right);
+                     if (r_shift_right < 0 || r_shift_right >= 64) {
+                        runtime_error(interp, "Right operand for '>>' must be in the range [0, 63].");
+                        return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_int(AS_INT(left) >> r_shift_right));
+
                 case T_LESS: case T_LESS_EQUAL: case T_GREATER: case T_GREATER_EQUAL:
                     if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
                         runtime_error(interp, "Operands must be numbers for comparison."); return ERROR_RESULT();
