@@ -4043,8 +4043,11 @@ static Value convert_cjson_to_value(Interpreter* interp, cJSON* item) {
     if (cJSON_IsString(item))  {
         return make_obj((Obj*)make_heap_string(interp, item->valuestring, strlen(item->valuestring)));
     }
-    if (cJSON_IsNumber(item))  {
-        double num = item->valuedouble;
+    if (cJSON_IsInt64(item)) {
+        return make_int(item->numeric_value.value_int64);
+    }
+    if (cJSON_IsDouble(item))  {
+        double num = item->numeric_value.valuedouble;
         if (num == (int64_t)num) {
             return make_int((int64_t)num);
         }
@@ -4131,7 +4134,7 @@ static cJSON* convert_value_to_cjson(Interpreter* interp, Value value, PrintVisi
     switch (value.type) {
         case VAL_NIL:     return cJSON_CreateNull();
         case VAL_BOOL:    return cJSON_CreateBool(AS_BOOL(value));
-        case VAL_INT:     return cJSON_CreateNumber((double)AS_INT(value));
+        case VAL_INT:     return cJSON_CreateInt64(AS_INT(value));
         case VAL_DOUBLE:  return cJSON_CreateNumber(AS_DOUBLE(value));
         case VAL_OBJ:
             if (visitor_contains(visitor, AS_OBJ(value))) {

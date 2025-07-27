@@ -20,6 +20,9 @@
   THE SOFTWARE.
 */
 
+/* Modified for PrattScript to add native int64_t support for JSON numbers */
+/* by Mounir IDRASSI <mounir.idrassi@amcrypto.jp> */
+
 #ifndef cJSON__h
 #define cJSON__h
 
@@ -84,17 +87,21 @@ then using the CJSON_API_VISIBILITY flag to "export" the same symbols the way CJ
 #define CJSON_VERSION_PATCH 18
 
 #include <stddef.h>
+#include <stdint.h>
+#include <inttypes.h>
 
 /* cJSON Types: */
-#define cJSON_Invalid (0)
-#define cJSON_False  (1 << 0)
-#define cJSON_True   (1 << 1)
-#define cJSON_NULL   (1 << 2)
-#define cJSON_Number (1 << 3)
-#define cJSON_String (1 << 4)
-#define cJSON_Array  (1 << 5)
-#define cJSON_Object (1 << 6)
-#define cJSON_Raw    (1 << 7) /* raw json */
+#define cJSON_Invalid         (0)
+#define cJSON_False           (1 << 0)
+#define cJSON_True            (1 << 1)
+#define cJSON_NULL            (1 << 2)
+/* split Number into Int64 vs Double */
+#define cJSON_Number_Int64    (1 << 3)
+#define cJSON_String          (1 << 4)
+#define cJSON_Array           (1 << 5)
+#define cJSON_Object          (1 << 6)
+#define cJSON_Raw             (1 << 7) /* raw json */
+#define cJSON_Number_Double   (1 << 8)
 
 #define cJSON_IsReference 256
 #define cJSON_StringIsConst 512
@@ -111,12 +118,13 @@ typedef struct cJSON
     /* The type of the item, as above. */
     int type;
 
-    /* The item's string, if type==cJSON_String  and type == cJSON_Raw */
+    /* The item's string, if type==cJSON_String or cJSON_Raw */
     char *valuestring;
-    /* writing to valueint is DEPRECATED, use cJSON_SetNumberValue instead */
-    int valueint;
-    /* The item's number, if type==cJSON_Number */
-    double valuedouble;
+    /* union to hold either a 64-bit integer or a double */
+    union {
+        int64_t value_int64;
+        double  valuedouble;
+    } numeric_value;
 
     /* The item's name string, if this item is the child of, or is in the list of subitems of an object. */
     char *string;
@@ -183,7 +191,9 @@ CJSON_PUBLIC(const char *) cJSON_GetErrorPtr(void);
 
 /* Check item type and return its value */
 CJSON_PUBLIC(char *) cJSON_GetStringValue(const cJSON * const item);
-CJSON_PUBLIC(double) cJSON_GetNumberValue(const cJSON * const item);
+CJSON_PUBLIC(double)   cJSON_GetNumberValue(const cJSON * const item);
+/* only valid if cJSON_IsInt64() returns true */
+CJSON_PUBLIC(int64_t)  cJSON_GetInt64Value(const cJSON * const item);
 
 /* These functions check the type of an item */
 CJSON_PUBLIC(cJSON_bool) cJSON_IsInvalid(const cJSON * const item);
@@ -192,6 +202,8 @@ CJSON_PUBLIC(cJSON_bool) cJSON_IsTrue(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsBool(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsNull(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsNumber(const cJSON * const item);
+CJSON_PUBLIC(cJSON_bool) cJSON_IsInt64(const cJSON * const item);
+CJSON_PUBLIC(cJSON_bool) cJSON_IsDouble(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsString(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsArray(const cJSON * const item);
 CJSON_PUBLIC(cJSON_bool) cJSON_IsObject(const cJSON * const item);
@@ -203,6 +215,7 @@ CJSON_PUBLIC(cJSON *) cJSON_CreateTrue(void);
 CJSON_PUBLIC(cJSON *) cJSON_CreateFalse(void);
 CJSON_PUBLIC(cJSON *) cJSON_CreateBool(cJSON_bool boolean);
 CJSON_PUBLIC(cJSON *) cJSON_CreateNumber(double num);
+CJSON_PUBLIC(cJSON *) cJSON_CreateInt64(int64_t number);
 CJSON_PUBLIC(cJSON *) cJSON_CreateString(const char *string);
 /* raw json */
 CJSON_PUBLIC(cJSON *) cJSON_CreateRaw(const char *raw);
@@ -277,11 +290,20 @@ CJSON_PUBLIC(cJSON*) cJSON_AddRawToObject(cJSON * const object, const char * con
 CJSON_PUBLIC(cJSON*) cJSON_AddObjectToObject(cJSON * const object, const char * const name);
 CJSON_PUBLIC(cJSON*) cJSON_AddArrayToObject(cJSON * const object, const char * const name);
 
-/* When assigning an integer value, it needs to be propagated to valuedouble too. */
-#define cJSON_SetIntValue(object, number) ((object) ? (object)->valueint = (object)->valuedouble = (number) : (number))
-/* helper for the cJSON_SetNumberValue macro */
+/* Set a 64‑bit integer, also update the double slot for compatibility */
+#define cJSON_SetIntValue(object, number) \
+    ((object) \
+         ? ((object)->numeric_value.value_int64 = (int64_t)(number), \
+            (object)->numeric_value.valuedouble = (double)(number), \
+            (number)) \
+         : (number))
+
+/* helper for the cJSON_SetNumberValue macro (stores in the double slot) */
 CJSON_PUBLIC(double) cJSON_SetNumberHelper(cJSON *object, double number);
-#define cJSON_SetNumberValue(object, number) ((object != NULL) ? cJSON_SetNumberHelper(object, (double)number) : (number))
+#define cJSON_SetNumberValue(object, number) \
+    ((object) \
+         ? cJSON_SetNumberHelper(object, (double)(number)) \
+         : (number))
 /* Change the valuestring of a cJSON_String object, only takes effect when type of object is cJSON_String */
 CJSON_PUBLIC(char*) cJSON_SetValuestring(cJSON *object, const char *valuestring);
 

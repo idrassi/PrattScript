@@ -2879,7 +2879,79 @@ static void run_json_tests() {
         "println(json.stringify(o));",
         "{\"self\":null}\n"
     );
+
+    // =========================================================================
+    // TESTS FOR INT64 PRECISION
+    // =========================================================================
+    printf("\nJSON stringify int64 precision tests:\n");
     
+    // MAX_SAFE_INTEGER is 9007199254740991 (2^53 - 1)
+    const char* setup = 
+        "var max_safe = 9007199254740991;"
+        "var unsafe_pos = 9007199254740992;" // This one would be fine
+        "var unsafe_pos_odd = 9007199254740993;" // This one would be rounded down
+        "var min_safe = -9007199254740991;"
+        "var unsafe_neg = -9007199254740992;"
+        "var unsafe_neg_odd = -9007199254740993;"
+        "var int64_max = 9223372036854775807;";
+        
+    // Test positive integers
+    run_interpreter_test("JSON: stringify max safe integer", 
+        "var n = 9007199254740991; println(json.stringify(n));", 
+        "9007199254740991\n");
+    
+    run_interpreter_test("JSON: stringify unsafe positive integer (even)", 
+        "var n = 9007199254740992; println(json.stringify(n));", 
+        "9007199254740992\n");
+        
+    run_interpreter_test("JSON: stringify unsafe positive integer (odd)", 
+        "var n = 9007199254740993; println(json.stringify(n));", 
+        "9007199254740993\n");
+        
+    run_interpreter_test("JSON: stringify INT64_MAX", 
+        "var n = 9223372036854775807; println(json.stringify(n));", 
+        "9223372036854775807\n");
+        
+    // Test negative integers
+    run_interpreter_test("JSON: stringify min safe integer", 
+        "var n = -9007199254740991; println(json.stringify(n));", 
+        "-9007199254740991\n");
+        
+    run_interpreter_test("JSON: stringify unsafe negative integer (even)", 
+        "var n = -9007199254740992; println(json.stringify(n));", 
+        "-9007199254740992\n");
+        
+    run_interpreter_test("JSON: stringify unsafe negative integer (odd)", 
+        "var n = -9007199254740993; println(json.stringify(n));", 
+        "-9007199254740993\n");
+
+    // Test inside composites
+    char source[1024];
+    snprintf(source, sizeof(source), "%s var arr = [max_safe, unsafe_pos_odd, int64_max, unsafe_neg_odd]; println(json.stringify(arr));", setup);
+    run_interpreter_test("JSON: stringify large ints in array", 
+        source, 
+        "[9007199254740991,9007199254740993,9223372036854775807,-9007199254740993]\n");
+
+    // Instead of asserting a specific string order for the object, we test that a
+    // round trip (stringify -> parse) preserves the values, which is order-independent.
+    const char* object_test_source = 
+        "var obj = { a: 9007199254740991, b: 9007199254740993, c: -9007199254740993 };"
+        "var s = json.stringify(obj);"  // Stringify the object
+        "var p = json.parse(s);"        // Parse it back
+        "println(p.a);"                 // Check the values of the new object
+        "println(p.b);"
+        "println(p.c);";
+    
+    const char* object_test_expected =
+        "9007199254740991\n"
+        "9007199254740993\n"
+        "-9007199254740993\n";
+
+    run_interpreter_test("JSON: stringify large ints in object", 
+        object_test_source, 
+        object_test_expected);
+    // =========================================================================
+
     // --- error cases ---
     run_interpreter_error_test("JSON Error: parse invalid json", "json.parse(\"{key:1}\");", "JSON parse error");
     run_interpreter_error_test("JSON Error: parse wrong type", "json.parse(123);", "expects one string argument");
