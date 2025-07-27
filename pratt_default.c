@@ -901,6 +901,7 @@ const char *default_token_name(PrattTokenType t) {
         case T_PLUS:      return "'+'";
         case T_MINUS:     return "'-'";
         case T_STAR:      return "'*'";
+        case T_STAR_STAR: return "'**'";
         case T_SLASH:     return "'/'";
         case T_PERCENT:   return "'%'";
         case T_CARET:     return "'^'";
@@ -963,6 +964,8 @@ const ParseRule default_rules[T_TOKEN_COUNT] = {
     [T_STAR]      = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_SLASH]     = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
     [T_PERCENT]   = PRATT_RULE(NULL,                    default_binary_infix, PREC_FACTOR, PREC_FACTOR),
+    /* Exponentiation. Right-associative, so rbp is one less than lbp. */
+    [T_STAR_STAR] = PRATT_RULE(NULL,                    default_binary_infix, PREC_EXPONENT, PREC_EXPONENT - 1),
 
     /* Bitwise Operators */
     [T_TILDE]     = PRATT_RULE(default_unary_prefix,    NULL,                 PREC_UNARY,  0),

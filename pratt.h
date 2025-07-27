@@ -181,6 +181,7 @@ struct Statement {
 #define PREC_SHIFT       22  /* << >> */
 #define PREC_TERM        23  /* + - */
 #define PREC_FACTOR      30  /* * / % */
+#define PREC_EXPONENT    35  /* ** */
 #define PREC_UNARY       40  /* - ! ~ */
 #define PREC_CALL        60  /* () . [] */
 #define PREC_PRIMARY     70

@@ -530,18 +530,21 @@ static void test_complex_precedence() {
 /*── Exponentiation tests ───────────────────────────────────────────────*/
 static void test_right_associativity_exponent() {
     TEST_START("Right associativity: exponentiation");
-    ASTNode *ast = parse_expression_test("2 ^ 3 ^ 2");
+    // Use the new operator for exponentiation
+    ASTNode *ast = parse_expression_test("2 ** 3 ** 2"); 
     ASSERT(ast != NULL, "Expected AST node");
     ASSERT(ast->type == AST_BINARY, "Expected binary node");
-    ASSERT(ast->as.binary.op.type == T_CARET,
-           "Root should be caret operator");
+    // The root operator should now be T_STAR_STAR
+    ASSERT(ast->as.binary.op.type == T_STAR_STAR,
+           "Root should be star-star operator");
 
-    /*  (2 ^ 3) ^ 2  would put '+' on the left branch,
-        right-associativity means the RIGHT child is another caret node. */
+    /*  (2 ** 3) ** 2  would put '+' on the left branch,
+        right-associativity means the RIGHT child is another star-star node. */
     ASSERT(ast->as.binary.right->type == AST_BINARY,
            "Right child should be binary");
-    ASSERT(ast->as.binary.right->as.binary.op.type == T_CARET,
-           "Right child should also be '^', proving right-assoc");
+    // The right child should also be T_STAR_STAR
+    ASSERT(ast->as.binary.right->as.binary.op.type == T_STAR_STAR,
+           "Right child should also be '**', proving right-assoc");
     TEST_PASS();
 }
 

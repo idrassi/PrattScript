@@ -309,7 +309,12 @@ PrattToken pratt_lexer_next(void *ctx) {
         case '.': return make_token(lex, T_DOT,       start_ptr, 1);
         case '+': return make_token(lex, T_PLUS,      start_ptr, 1);
         case '-': return make_token(lex, T_MINUS,     start_ptr, 1);
-        case '*': return make_token(lex, T_STAR,      start_ptr, 1);
+        case '*':
+            if (lexer_peek(lex) == '*') {
+                advance_char(lex);
+                return make_token(lex, T_STAR_STAR, start_ptr, 2);
+            }
+            return make_token(lex, T_STAR,      start_ptr, 1);
         case '/': return make_token(lex, T_SLASH,     start_ptr, 1);
         case '%': return make_token(lex, T_PERCENT,   start_ptr, 1);
         case '^': return make_token(lex, T_CARET,     start_ptr, 1);

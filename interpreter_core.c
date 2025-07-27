@@ -1499,6 +1499,12 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                     }
                     return OK_RESULT(make_int(AS_INT(left) ^ AS_INT(right)));
 
+                case T_STAR_STAR:
+                    if (!IS_NUMERIC(left) || !IS_NUMERIC(right)) {
+                        runtime_error(interp, "Operands for '**' must be numbers."); return ERROR_RESULT();
+                    }
+                    return OK_RESULT(make_double(pow(AS_NUMBER(left), AS_NUMBER(right))));
+
                 case T_LESS_LESS:
                     if (!IS_INT(left) || !IS_INT(right)) {
                         runtime_error(interp, "Operands for '<<' must be integers."); return ERROR_RESULT();
