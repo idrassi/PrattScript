@@ -263,6 +263,7 @@ Value make_int(int64_t value) { return (Value){VAL_INT, .as.integer = value}; }
 Value make_double(double value) { return (Value){VAL_DOUBLE, .as.number = value}; }
 Value make_bool(bool value) { return (Value){VAL_BOOL, .as.boolean = value}; }
 Value make_nil(void) { return (Value){VAL_NIL}; }
+Value make_tombstone(void) { return (Value){VAL_TOMBSTONE}; }
 Value make_builtin(BuiltinFn fn) { return (Value){VAL_BUILTIN, .as.builtin = fn}; }
 Value make_obj(Obj* object) { return (Value){VAL_OBJ, .as.obj = object}; }
 
@@ -291,11 +292,12 @@ static Entry* find_entry(Entry* entries, int capacity, ObjString* key) {
 
     for (;;) {
         Entry* entry = &entries[index];
-        if (entry->key == NULL) {
-            if (IS_NIL(entry->value)) { // Empty bucket.
-                return tombstone != NULL ? tombstone : entry;
-            } else { // Found a tombstone.
+        if (entry->key == NULL) { // Can be empty or a tombstone
+            if (IS_TOMBSTONE(entry->value)) {
+                // Found a tombstone.
                 if (tombstone == NULL) tombstone = entry;
+            } else { // It must be an empty bucket (IS_NIL).
+                return tombstone != NULL ? tombstone : entry;
             }
         } else if (entry->key == key) { // Key is found by pointer equality due to interning.
             return entry;
@@ -335,8 +337,9 @@ static bool map_set(Interpreter* interp, Map* map, ObjString* key, Value value) 
     Entry* entry = find_entry(map->entries, map->capacity, key);
     if (!entry) return false;
     
+    // A new key is being inserted if the slot was previously empty or a tombstone.
     bool is_new_key = entry->key == NULL;
-    if (is_new_key && IS_NIL(entry->value)) map->count++;
+    if (is_new_key) map->count++;
 
     entry->key = key;
     entry->value = value;
@@ -358,7 +361,7 @@ static void map_remove_white(Interpreter* interp, Map* map) {
             // This is essentially weak-key behavior for the string table.
             // An un-marked key means the string is no longer reachable anywhere else.
             entry->key = NULL;
-            entry->value = make_bool(true); // Tombstone
+            entry->value = make_tombstone(); // Tombstone
             map->count--;
         }
     }

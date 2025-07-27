@@ -97,7 +97,8 @@ typedef enum {
     VAL_INT,
     VAL_DOUBLE,
     VAL_BUILTIN,
-    VAL_OBJ       // All heap types are now VAL_OBJ
+    VAL_OBJ,       // All heap types are now VAL_OBJ
+    VAL_TOMBSTONE  // A special marker for deleted map entries
 } ValueType;
 
 /*  Forward declaration for Value struct */
@@ -126,6 +127,7 @@ typedef struct Value {
 #define IS_NUMBER(value)  IS_NUMERIC(value)
 #define IS_BUILTIN(value) ((value).type == VAL_BUILTIN)
 #define IS_OBJ(value)     ((value).type == VAL_OBJ)
+#define IS_TOMBSTONE(value) ((value).type == VAL_TOMBSTONE)
 
 #define AS_BOOL(value)    ((value).as.boolean)
 #define AS_INT(value)     ((value).as.integer)
@@ -264,5 +266,6 @@ Value make_int(int64_t value);
 Value make_double(double value);
 Value make_bool(bool value);
 Value make_nil(void);
+Value make_tombstone(void);
 
 #endif // INTERPRETER_CORE_H
