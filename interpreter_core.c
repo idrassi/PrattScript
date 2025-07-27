@@ -2842,7 +2842,7 @@ static Value builtin_array_shuffle(Interpreter* interp, size_t argc, Value* args
     
     // Fisher-Yates shuffle
     for (int i = array->count - 1; i > 0; i--) {
-        int j = rand() % (i + 1);
+        int j = (int) (sfc64_next(&interp->rng) % (i + 1));
         Value temp = array->values[i];
         array->values[i] = array->values[j];
         array->values[j] = temp;
