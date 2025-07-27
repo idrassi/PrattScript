@@ -48,3 +48,15 @@ endif()
 
 # Set C standard for prattscript
 set_target_properties(prattscript PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+
+# Add CJSON_HIDE_SYMBOLS define to hide cJSON symbols
+target_compile_definitions(prattlib PRIVATE CJSON_HIDE_SYMBOLS)
+target_compile_definitions(test_suite PRIVATE CJSON_HIDE_SYMBOLS)
+target_compile_definitions(prattscript PRIVATE CJSON_HIDE_SYMBOLS)
+
+# Static C runtime linking on Windows
+if(WIN32 AND MSVC)
+    target_compile_options(prattlib PRIVATE $<$<CONFIG:Debug>:/MTd> $<$<CONFIG:Release>:/MT>)
+    target_compile_options(test_suite PRIVATE $<$<CONFIG:Debug>:/MTd> $<$<CONFIG:Release>:/MT>)
+    target_compile_options(prattscript PRIVATE $<$<CONFIG:Debug>:/MTd> $<$<CONFIG:Release>:/MT>)
+endif()
