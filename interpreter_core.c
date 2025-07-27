@@ -1320,7 +1320,12 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
             switch (node->as.unary.op.type) {
                 case T_MINUS:
                     if (IS_INT(right)) {
-                        return OK_RESULT(make_int(-AS_INT(right)));
+                        int64_t val = AS_INT(right);
+                        // Handle overflow when negating the most negative integer.
+                        if (val == INT64_MIN) {
+                            return OK_RESULT(make_double(-(double)val));
+                        }
+                        return OK_RESULT(make_int(-val));
                     }
                     if (IS_DOUBLE(right)) {
                         return OK_RESULT(make_double(-AS_DOUBLE(right)));
@@ -1467,12 +1472,18 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
 
                     // If both are integers, perform integer modulo.
                     if (IS_INT(left) && IS_INT(right)) {
+                        int64_t l_int = AS_INT(left);
                         int64_t r_int = AS_INT(right);
                         if (r_int == 0) {
                             runtime_error(interp, "Modulo by zero.");
                             return ERROR_RESULT();
                         }
-                        return OK_RESULT(make_int(AS_INT(left) % r_int));
+                        // Handle the specific integer overflow case of INT64_MIN % -1, which is UB in C.
+                        // The mathematical result is 0, so we return that directly.
+                        if (l_int == INT64_MIN && r_int == -1) {
+                            return OK_RESULT(make_int(0));
+                        }
+                        return OK_RESULT(make_int(l_int % r_int));
                     }
 
                     // Otherwise, perform floating point remainder using fmod().
@@ -1509,12 +1520,19 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
                     if (!IS_INT(left) || !IS_INT(right)) {
                         runtime_error(interp, "Operands for '<<' must be integers."); return ERROR_RESULT();
                     }
+                    int64_t l_shift_left = AS_INT(left);
                     int64_t r_shift_left = AS_INT(right);
                     if (r_shift_left < 0 || r_shift_left >= 64) {
                         runtime_error(interp, "Right operand for '<<' must be in the range [0, 63].");
                         return ERROR_RESULT();
                     }
-                    return OK_RESULT(make_int(AS_INT(left) << r_shift_left));
+                    // To avoid C's undefined behavior for left-shifting a negative number,
+                    // we cast to unsigned, perform the shift, and cast back. This
+                    // performs a well-defined logical shift on the bit pattern, which is
+                    // the desired behavior in most high-level scripting languages.
+                    uint64_t u_left = (uint64_t)l_shift_left;
+                    uint64_t result = u_left << r_shift_left;
+                    return OK_RESULT(make_int((int64_t)result));
 
                 case T_GREATER_GREATER:
                     if (!IS_INT(left) || !IS_INT(right)) {

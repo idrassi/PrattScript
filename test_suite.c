@@ -2757,6 +2757,47 @@ static void test_modulo_execution() {
     run_interpreter_error_test("Modulo Error: Non-numeric operand (right)", "5 % \"a\";", "Operands for '%' must be numbers.");
 }
 
+/* ── Interpreter tests for UB fixes and robustness ──────────────────────────*/
+static void run_integer_robustness_tests() {
+    printf("\nInteger Robustness Tests (UB Fixes)\n");
+    printf("-------------------------------------\n");
+    
+    // --- INT64_MIN constant for tests ---
+    // This value is -9223372036854775808
+    const char* int_min_setup = "var INT_MIN = -9223372036854775807 - 1; ";
+
+    // --- Unary Minus Overflow Test ---
+    const char* unary_minus_source = "println(-(INT_MIN));";
+    const char* unary_minus_expected = "9.22337e+18\n"; // Should promote to double
+    char full_source[256];
+    snprintf(full_source, sizeof(full_source), "%s %s", int_min_setup, unary_minus_source);
+    run_interpreter_test("Unary Minus: Overflow of INT64_MIN", full_source, unary_minus_expected);
+
+    // --- Modulo Overflow Test ---
+    const char* modulo_source = "println(INT_MIN % -1);";
+    const char* modulo_expected = "0\n"; // The mathematical result is 0
+    snprintf(full_source, sizeof(full_source), "%s %s", int_min_setup, modulo_source);
+    run_interpreter_test("Modulo: Overflow of INT64_MIN % -1", full_source, modulo_expected);
+
+    // --- Left Shift of Negative Value Tests ---
+    run_interpreter_test("Left Shift: Negative value (small shift)", 
+        "println(-1 << 1);", "-2\n");
+    run_interpreter_test("Left Shift: Negative value (large shift)", 
+        "println(-1 << 63);", "-9223372036854775808\n"); // Becomes INT64_MIN
+    run_interpreter_test("Left Shift: Positive value remains correct", 
+        "println(1 << 62);", "4611686018427387904\n");
+
+    // --- Shift Bounds Tests (to confirm they still work) ---
+    run_interpreter_error_test("Left Shift Error: Negative shift amount", 
+        "1 << -1;", "Right operand for '<<' must be in the range [0, 63].");
+    run_interpreter_error_test("Left Shift Error: Shift amount too large", 
+        "1 << 64;", "Right operand for '<<' must be in the range [0, 63].");
+    run_interpreter_error_test("Right Shift Error: Negative shift amount", 
+        "1 >> -1;", "Right operand for '>>' must be in the range [0, 63].");
+    run_interpreter_error_test("Right Shift Error: Shift amount too large", 
+        "1 >> 64;", "Right operand for '>>' must be in the range [0, 63].");
+}
+
 // ======================= JSON TESTS =======================
 static void run_json_tests() {
     printf("\nJSON Built-in Tests\n");
@@ -3126,6 +3167,8 @@ static void run_all_tests() {
     test_comparison_logic_objects();
     test_comparison_logic_strict_typing();
     test_relational_operators_on_composites();
+
+    run_integer_robustness_tests();
     
     printf("\nNumeric System Tests\n");
     printf("----------------------\n");
