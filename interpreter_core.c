@@ -1105,11 +1105,14 @@ static ExecResult call_value(Interpreter* interp, Value callee_val, size_t argc,
             }
 
             ObjEnv* frame = new_env_obj(interp, function->closure);
+            push_root(interp, (Obj*)frame); // Protect the frame environment from GC
             for (size_t i = 0; i < function->arity; i++) {
                 env_define(interp, frame, function->params[i], args[i]);
             }
             
             ExecResult result = execute_block(interp, function->body->as.block.list, function->body->as.block.count, frame);
+            
+            pop_root(interp); // Unroot the frame environment
             
             if (result.status == EXEC_RETURN) return OK_RESULT(result.value);
             if (result.status == EXEC_OK) return OK_RESULT(make_nil()); // Implicit return nil.

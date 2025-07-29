@@ -1713,8 +1713,8 @@ static void test_function_recursion() {
         "  if (n < 2) return n;"
         "  return fib(n - 2) + fib(n - 1);"
         "}"
-        "println(fib(8));";
-    const char* expected = "21\n";
+        "println(fib(21));";
+    const char* expected = "10946\n";
     run_interpreter_test("Functions: recursion (fibonacci)", source, expected);
 }
 
