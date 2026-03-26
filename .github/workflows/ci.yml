@@ -15,18 +15,24 @@ jobs:
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      BUILD_DIR: build
+      BUILD_TYPE: Release
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: Linux
             os: ubuntu-latest
+            artifact_suffix: linux
             script: bash ./.github/scripts/build-and-test.sh
           - name: macOS
             os: macos-latest
+            artifact_suffix: macos
             script: bash ./.github/scripts/build-and-test.sh
           - name: Windows
             os: windows-latest
+            artifact_suffix: windows
             script: ./.github/scripts/build-and-test.ps1
 
     steps:
@@ -35,3 +41,32 @@ jobs:
 
       - name: Build and test
         run: ${{ matrix.script }}
+
+      - name: Package binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          tar -C "$BUILD_DIR" -czf "artifacts/prattscript-${{ matrix.artifact_suffix }}-${{ runner.arch }}.tar.gz" \
+            prattscript \
+            test_suite \
+            vm_test_suite
+
+      - name: Package binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path @(
+            "$env:BUILD_DIR\$env:BUILD_TYPE\prattscript.exe",
+            "$env:BUILD_DIR\$env:BUILD_TYPE\test_suite.exe",
+            "$env:BUILD_DIR\$env:BUILD_TYPE\vm_test_suite.exe"
+          ) -DestinationPath "artifacts/prattscript-${{ matrix.artifact_suffix }}-${{ runner.arch }}.zip" -Force
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: prattscript-${{ matrix.artifact_suffix }}-${{ runner.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
