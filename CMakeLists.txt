@@ -33,6 +33,14 @@ target_link_libraries(test_suite prattlib)
 # Set C standard for test executable
 set_target_properties(test_suite PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
 
+# Create the VM-focused test suite executable
+add_executable(vm_test_suite
+    vm_test_suite.c
+)
+
+# Set C standard for VM test executable
+set_target_properties(vm_test_suite PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+
 # Create the interpreter executable
 add_executable(prattscript
     cJSON.c
