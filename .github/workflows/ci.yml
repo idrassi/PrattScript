@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            shell: bash
+            script: bash ./.github/scripts/build-and-test.sh
+          - name: macOS
+            os: macos-latest
+            shell: bash
+            script: bash ./.github/scripts/build-and-test.sh
+          - name: Windows
+            os: windows-latest
+            shell: pwsh
+            script: ./.github/scripts/build-and-test.ps1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build and test
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.script }}

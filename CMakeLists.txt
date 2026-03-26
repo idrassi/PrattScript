@@ -55,6 +55,8 @@ add_executable(prattscript
 
 target_link_libraries(prattscript prattlib)
 if(UNIX OR APPLE)
+    target_link_libraries(test_suite m)
+    target_link_libraries(vm_test_suite m)
     target_link_libraries(prattscript m)
 endif()
 
