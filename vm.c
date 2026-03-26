@@ -81,13 +81,28 @@ static void runtimeError(VM* vm, const char* format, ...) {
 static int getLine(ObjFunction* function, size_t instruction) {
     int line = 1; // Default to 1 if no lines
     size_t offset = 0;
+    if (function == NULL || function->lines == NULL || function->lineCount < 2) {
+        return line;
+    }
     if (instruction >= function->codeSize) return line;
 
-    for (int i = 0; i < function->lineCount; i += 2) {
-        offset += function->lines[i];
-        if (instruction < offset) return function->lines[i + 1];
+    for (int i = 0; i + 1 < function->lineCount; i += 2) {
+        offset += (size_t)function->lines[i];
+        line = function->lines[i + 1];
+        if (instruction < offset) return line;
     }
-    return function->lines[function->lineCount - 1];
+    return line;
+}
+
+static void resetExecutionState(VM* vm) {
+    if (vm->stack != NULL && vm->openUpvalues != NULL) {
+        closeUpvalues(vm, vm->stack);
+    }
+    vm->frameCount = 0;
+    vm->stackTop = vm->stack;
+    vm->openUpvalues = NULL;
+    vm->had_error = 0;
+    vm->error_message[0] = '\0';
 }
 
 // Initialize VM
@@ -100,7 +115,7 @@ void initVM(VM* vm) {
         fprintf(stderr, "fatal: unable to allocate VM register stack\n");
         abort();
     }
-    vm->stackTop = vm->stack;
+    resetExecutionState(vm);
     initTable(&vm->globals);
     initTable(&vm->strings);
     
@@ -121,8 +136,6 @@ void initVM(VM* vm) {
     vm->root_stack = NULL;
     vm->root_stack_count = 0;
     vm->root_stack_capacity = 0;
-    vm->had_error = 0;
-    vm->error_message[0] = '\0';
     sfc64_init(&vm->rng, (uint64_t)time(NULL));
 }
 
@@ -253,6 +266,7 @@ static inline void validateReg(VM* vm, CallFrame* frame, uint8_t reg) {
 
 // Main interpreter loop
 InterpretResult interpret(VM* vm, ObjFunction* function) {
+    resetExecutionState(vm);
     ObjClosure* closure = newClosure(vm, function);
     if (!call(vm, closure, 0, 0, 0)) {
         return INTERPRET_RUNTIME_ERROR;
@@ -748,15 +762,16 @@ mul_end_label:
     op_return: {
         uint8_t reg = READ_BYTE();
         Value result = READ_REG(reg);
+        Value* frameRegs = frame->regs;
         
-        closeUpvalues(vm, frame->regs);
+        closeUpvalues(vm, frameRegs);
         uint8_t retReg = frame->returnReg;
         vm->frameCount--;
+        vm->stackTop = frameRegs;
         if (vm->frameCount == 0) {
             return INTERPRET_OK;
         }
         
-        vm->stackTop = frame->regs;
         frame = &vm->frames[vm->frameCount - 1];
         WRITE_REG(retReg, result);
         DISPATCH();
@@ -1211,15 +1226,16 @@ mul_end_label:
             case OP_RETURN: {
                 uint8_t reg = READ_BYTE();
                 Value result = READ_REG(reg);
+                Value* frameRegs = frame->regs;
                 
-                closeUpvalues(vm, frame->regs);
+                closeUpvalues(vm, frameRegs);
                 uint8_t retReg = frame->returnReg;
                 vm->frameCount--;
+                vm->stackTop = frameRegs;
                 if (vm->frameCount == 0) {
                     return INTERPRET_OK;
                 }
 
-                vm->stackTop = frame->regs;
                 frame = &vm->frames[vm->frameCount - 1];
                 WRITE_REG(retReg, result);
                 continue;
@@ -1318,6 +1334,9 @@ static bool call(VM* vm, ObjClosure* closure, uint8_t argCount, uint8_t firstArg
     frame->regs = vm->stackTop;
     frame->returnReg = returnReg;
 
+    for (int i = 0; i < closure->function->regCount; i++) {
+        frame->regs[i] = NIL_VAL();
+    }
     vm->stackTop += closure->function->regCount;
 
     if (prevFrame && argCount) {
