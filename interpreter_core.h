@@ -38,6 +38,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <setjmp.h>
 #include "pratt_default.h"
 #include "sfc64.h"
 
@@ -241,6 +242,8 @@ struct Interpreter {
     // Error state
     int had_error;
     char error_message[256];
+    jmp_buf oom_jmp;
+    int oom_guard_active;
 
     // Random number generator context used in built-ins
     // SFC64 offers a fast, high-quality RNG suitable for games and simulations.

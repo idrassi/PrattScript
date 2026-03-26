@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <setjmp.h>
 
 #include "runtime_core.h"
 #include "sfc64.h"
@@ -162,6 +163,8 @@ struct VM {
     int root_stack_capacity;
     int had_error;
     char error_message[256];
+    jmp_buf oom_jmp;
+    int oom_guard_active;
     SFC64Context rng;
 };
 

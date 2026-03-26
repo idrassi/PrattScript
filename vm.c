@@ -53,11 +53,17 @@ static void sweep(VM* vm);
 static void mark_object(VM* vm, Obj* object);
 static void mark_value(VM* vm, Value value);
 static void blacken_object(VM* vm, Obj* object);
+static void vm_fatal_oom(VM* vm, const char* message);
+static InterpretResult interpret_impl(VM* vm, ObjFunction* function);
 
 // Runtime error handling
 static void runtimeError(VM* vm, const char* format, ...) {
     va_list args;
+    va_list args_copy;
     va_start(args, format);
+    va_copy(args_copy, args);
+    vsnprintf(vm->error_message, sizeof(vm->error_message), format, args_copy);
+    va_end(args_copy);
     vfprintf(stderr, format, args);
     va_end(args);
     fputs("\n", stderr);
@@ -75,6 +81,15 @@ static void runtimeError(VM* vm, const char* format, ...) {
         }
     }
     vm->had_error = 1;
+}
+
+static void vm_fatal_oom(VM* vm, const char* message) {
+    if (vm != NULL && !vm->had_error) {
+        runtimeError(vm, "%s", message);
+    }
+    if (vm != NULL && vm->oom_guard_active) {
+        longjmp(vm->oom_jmp, 1);
+    }
 }
 
 // Find line number for an instruction offset
@@ -112,8 +127,10 @@ void initVM(VM* vm) {
     /* Allocate the register stack on the heap (avoids huge TLS blocks).   */
     vm->stack = (Value*)malloc(sizeof(Value) * STACK_MAX);
     if (!vm->stack) {
-        fprintf(stderr, "fatal: unable to allocate VM register stack\n");
-        abort();
+        vm->had_error = 1;
+        snprintf(vm->error_message, sizeof(vm->error_message),
+                 "unable to allocate VM register stack");
+        return;
     }
     resetExecutionState(vm);
     initTable(&vm->globals);
@@ -266,6 +283,23 @@ static inline void validateReg(VM* vm, CallFrame* frame, uint8_t reg) {
 
 // Main interpreter loop
 InterpretResult interpret(VM* vm, ObjFunction* function) {
+    if (!vm->oom_guard_active) {
+        vm->oom_guard_active = 1;
+        if (setjmp(vm->oom_jmp) != 0) {
+            vm->oom_guard_active = 0;
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        InterpretResult result = interpret_impl(vm, function);
+        vm->oom_guard_active = 0;
+        return result;
+    }
+    return interpret_impl(vm, function);
+}
+
+static InterpretResult interpret_impl(VM* vm, ObjFunction* function) {
+    if (vm->stack == NULL) {
+        return INTERPRET_RUNTIME_ERROR;
+    }
     resetExecutionState(vm);
     ObjClosure* closure = newClosure(vm, function);
     if (!call(vm, closure, 0, 0, 0)) {
@@ -1421,7 +1455,9 @@ static void closeUpvalues(VM* vm, Value* last) {
 
 static void collect_garbage(VM* vm) {
     mark_roots(vm);
+    if (vm->had_error) return;
     trace_references(vm);
+    if (vm->had_error) return;
     table_remove_white(vm, &vm->strings);
     sweep(vm);
     vm->nextGC = vm->bytesAllocated * 2;
@@ -1482,9 +1518,14 @@ static void mark_object(VM* vm, Obj* object) {
     object->is_marked = true;
 
     if (vm->grayCapacity < vm->grayCount + 1) {
-        vm->grayCapacity = GROW_CAPACITY(vm->grayCapacity);
-        vm->grayStack = (Obj**)realloc(vm->grayStack, sizeof(Obj*) * vm->grayCapacity);
-        if (vm->grayStack == NULL) exit(1);
+        int new_capacity = GROW_CAPACITY(vm->grayCapacity);
+        Obj** new_gray_stack = (Obj**)realloc(vm->grayStack, sizeof(Obj*) * new_capacity);
+        if (new_gray_stack == NULL) {
+            vm_fatal_oom(vm, "Out of memory growing the VM GC worklist.");
+            return;
+        }
+        vm->grayStack = new_gray_stack;
+        vm->grayCapacity = new_capacity;
     }
     vm->grayStack[vm->grayCount++] = object;
 }

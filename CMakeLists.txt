@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(PrattScript C)
 
+enable_testing()
+
 # Create the static library from the source files
 add_library(prattlib STATIC
     pratt.c
@@ -40,6 +42,8 @@ add_executable(vm_test_suite
 
 # Set C standard for VM test executable
 set_target_properties(vm_test_suite PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+add_test(NAME test_suite COMMAND test_suite)
+add_test(NAME vm_test_suite COMMAND vm_test_suite)
 
 # Create the interpreter executable
 add_executable(prattscript

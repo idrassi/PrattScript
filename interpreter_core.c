@@ -73,6 +73,9 @@
 ExecResult eval(Interpreter *interp, ASTNode *node);
 ExecResult execute(Interpreter *interp, Statement *stmt);
 ExecResult execute_block(Interpreter *interp, Statement **stmts, size_t count, ObjEnv *env);
+static ExecResult eval_impl(Interpreter *interp, ASTNode *node);
+static ExecResult execute_impl(Interpreter *interp, Statement *stmt);
+static ExecResult execute_block_impl(Interpreter *interp, Statement **stmts, size_t count, ObjEnv *env);
 static ObjString* find_interned_string(StringInterner* interner, const char* chars, size_t length, uint32_t hash);
 static void map_init(Map* map);
 
@@ -93,10 +96,26 @@ void collect_garbage(Interpreter* interp);
 static void mark_value(Interpreter* interp, Value value);
 static void mark_object(Interpreter* interp, Obj* object);
 void runtime_error(Interpreter *interp, const char *format, ...);
+static void interpreter_fatal_oom(Interpreter* interp, const char* message);
+
+
+static void interpreter_fatal_oom(Interpreter* interp, const char* message) {
+    if (interp != NULL && !interp->had_error) {
+        runtime_error(interp, "%s", message);
+    }
+    if (interp != NULL && interp->oom_guard_active) {
+        longjmp(interp->oom_jmp, 1);
+    }
+}
 
 
 static void* reallocate(Interpreter* interp, void* pointer, size_t old_size, size_t new_size) {
-    interp->bytes_allocated += new_size - old_size;
+    size_t previous_bytes = interp->bytes_allocated;
+    if (new_size > old_size) {
+        interp->bytes_allocated += new_size - old_size;
+    } else {
+        interp->bytes_allocated -= old_size - new_size;
+    }
 
     // GC is triggered *before* allocation when memory is increasing.
     // This gives it a chance to free up space to fulfill the request.
@@ -115,10 +134,9 @@ static void* reallocate(Interpreter* interp, void* pointer, size_t old_size, siz
     }
     void* result = PRATT_REALLOC(pointer, new_size);
     if (result == NULL) {
-        // In a real-world scenario, we might try to GC one more time before failing.
-        // For now, exiting is a reasonable strategy for OOM.
-        fprintf(stderr, "Fatal: out of memory.\n");
-        exit(1);
+        interp->bytes_allocated = previous_bytes;
+        interpreter_fatal_oom(interp, "Out of memory.");
+        return NULL;
     }
     return result;
 }
@@ -411,9 +429,14 @@ void mark_object(Interpreter* interp, Obj* object) {
     object->is_marked = true;
 
     if (interp->gray_capacity < interp->gray_count + 1) {
-        interp->gray_capacity = GROW_CAPACITY(interp->gray_capacity);
-        interp->gray_stack = (Obj**)PRATT_REALLOC(interp->gray_stack, sizeof(Obj*) * interp->gray_capacity);
-        if (interp->gray_stack == NULL) exit(1);
+        int new_capacity = GROW_CAPACITY(interp->gray_capacity);
+        Obj** new_gray_stack = (Obj**)PRATT_REALLOC(interp->gray_stack, sizeof(Obj*) * new_capacity);
+        if (new_gray_stack == NULL) {
+            interpreter_fatal_oom(interp, "Out of memory growing the GC worklist.");
+            return;
+        }
+        interp->gray_stack = new_gray_stack;
+        interp->gray_capacity = new_capacity;
     }
     interp->gray_stack[interp->gray_count++] = object;
 }
@@ -436,16 +459,17 @@ static void push_root(Interpreter* interp, Obj* obj) {
     if (obj == NULL) return; // No need to root NULL
     if (interp->root_stack_count + 1 > interp->root_stack_capacity) {
         int old_capacity = interp->root_stack_capacity;
-        interp->root_stack_capacity = GROW_CAPACITY(old_capacity);
+        int new_capacity = GROW_CAPACITY(old_capacity);
         // This allocation is for the GC's own bookkeeping and should not be tracked
         // by the GC itself (to avoid recursive collection triggers), so we use 
         // PRATT_REALLOC directly instead of the interpreter's reallocate().
-        interp->root_stack = (Obj**)PRATT_REALLOC(interp->root_stack, sizeof(Obj*) * interp->root_stack_capacity);
-        if (interp->root_stack == NULL) {
-            // This is a catastrophic failure. Cannot protect objects from GC.
-            fprintf(stderr, "Fatal: out of memory growing GC root stack.\n");
-            exit(1);
+        Obj** new_root_stack = (Obj**)PRATT_REALLOC(interp->root_stack, sizeof(Obj*) * new_capacity);
+        if (new_root_stack == NULL) {
+            interpreter_fatal_oom(interp, "Out of memory growing the GC root stack.");
+            return;
         }
+        interp->root_stack = new_root_stack;
+        interp->root_stack_capacity = new_capacity;
     }
     interp->root_stack[interp->root_stack_count++] = obj;
 }
@@ -540,7 +564,9 @@ static void sweep(Interpreter* interp) {
 
 void collect_garbage(Interpreter* interp) {
     mark_roots(interp);
+    if (interp->had_error) return;
     trace_references(interp);
+    if (interp->had_error) return;
     map_remove_white(interp, (Map*)&interp->interner); // Clean weak refs from string table.
     sweep(interp);
     
@@ -902,6 +928,7 @@ static BuiltinDef builtins[] = {
 void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     interp->had_error = 0;
     interp->error_message[0] = '\0';
+    interp->oom_guard_active = 1;
     
     interp->objects = NULL;
     interp->bytes_allocated = 0;
@@ -913,6 +940,11 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     interp->root_stack_count = 0;
     interp->root_stack_capacity = 0;
 
+    if (setjmp(interp->oom_jmp) != 0) {
+        interp->oom_guard_active = 0;
+        return;
+    }
+
     arena_init(&interp->arena, initial_arena_size);
     interner_init(&interp->interner);
 
@@ -921,10 +953,6 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
 
     // Create the global environment. It's an object now.
     interp->env = new_env_obj(interp, NULL);
-    if (interp->env == NULL) { // Check for allocation failure
-        runtime_error(interp, "Out of memory initializing interpreter.");
-        return;
-    }
     
     // --- Push env to root stack during initialization ---
     push_root(interp, (Obj*)interp->env);
@@ -1074,9 +1102,10 @@ void interpreter_init(Interpreter* interp, size_t initial_arena_size) {
     map_set(interp, &json_object->map, interpreter_intern_string(interp, "stringify", 9), make_builtin(builtin_json_stringify));
     env_define(interp, interp->env, interpreter_intern_string(interp, "json", 4), make_obj((Obj*)json_object));
     pop_root(interp);
-
+    
     // --- Pop env, now that it's fully populated ---
     pop_root(interp); 
+    interp->oom_guard_active = 0;
 }
 
 void interpreter_destroy(Interpreter *interp) {
@@ -1130,6 +1159,20 @@ static ExecResult call_value(Interpreter* interp, Value callee_val, size_t argc,
 
 // --- THE EVALUATOR ---
 ExecResult eval(Interpreter *interp, ASTNode *node) {
+    if (!interp->oom_guard_active) {
+        interp->oom_guard_active = 1;
+        if (setjmp(interp->oom_jmp) != 0) {
+            interp->oom_guard_active = 0;
+            return ERROR_RESULT();
+        }
+        ExecResult result = eval_impl(interp, node);
+        interp->oom_guard_active = 0;
+        return result;
+    }
+    return eval_impl(interp, node);
+}
+
+static ExecResult eval_impl(Interpreter *interp, ASTNode *node) {
     if (interp->had_error) return ERROR_RESULT();
     
     switch (node->type) {
@@ -1633,6 +1676,20 @@ ExecResult eval(Interpreter *interp, ASTNode *node) {
 
 // --- THE EXECUTOR ---
 ExecResult execute_block(Interpreter *interp, Statement **stmts, size_t count, ObjEnv *block_env) {
+    if (!interp->oom_guard_active) {
+        interp->oom_guard_active = 1;
+        if (setjmp(interp->oom_jmp) != 0) {
+            interp->oom_guard_active = 0;
+            return ERROR_RESULT();
+        }
+        ExecResult result = execute_block_impl(interp, stmts, count, block_env);
+        interp->oom_guard_active = 0;
+        return result;
+    }
+    return execute_block_impl(interp, stmts, count, block_env);
+}
+
+static ExecResult execute_block_impl(Interpreter *interp, Statement **stmts, size_t count, ObjEnv *block_env) {
     ObjEnv* previous_env = interp->env;
     interp->env = block_env;
     ExecResult res = OK_RESULT(make_nil());
@@ -1647,6 +1704,20 @@ ExecResult execute_block(Interpreter *interp, Statement **stmts, size_t count, O
 }
 
 ExecResult execute(Interpreter *interp, Statement *stmt) {
+    if (!interp->oom_guard_active) {
+        interp->oom_guard_active = 1;
+        if (setjmp(interp->oom_jmp) != 0) {
+            interp->oom_guard_active = 0;
+            return ERROR_RESULT();
+        }
+        ExecResult result = execute_impl(interp, stmt);
+        interp->oom_guard_active = 0;
+        return result;
+    }
+    return execute_impl(interp, stmt);
+}
+
+static ExecResult execute_impl(Interpreter *interp, Statement *stmt) {
     if (interp->had_error || !stmt) return ERROR_RESULT();
 
     switch (stmt->type) {
@@ -1672,7 +1743,7 @@ ExecResult execute(Interpreter *interp, Statement *stmt) {
         case ST_BLOCK: {
             // Create the new environment as a GC object, with the current env as its parent.
             ObjEnv* block_env = new_env_obj(interp, interp->env);
-            if (!block_env) { /* new_env_obj would have exited on OOM */ return ERROR_RESULT(); }
+            if (!block_env) return ERROR_RESULT();
             return execute_block(interp, stmt->as.block.list, stmt->as.block.count, block_env);
         }
         case ST_IF: {
@@ -3439,10 +3510,11 @@ static Value builtin_fs_remove(Interpreter* interp, size_t argc, Value* args) {
 
 #ifdef _WIN32
     struct stat stat_buf;
-    if (stat(path, &stat_buf) != 0) {
-        // File/dir does not exist, but let the remove functions handle the error.
+    bool is_directory = false;
+    if (stat(path, &stat_buf) == 0) {
+        is_directory = S_ISDIR(stat_buf.st_mode);
     }
-    if (S_ISDIR(stat_buf.st_mode)) {
+    if (is_directory) {
         if (RemoveDirectoryA(path)) {
             return make_bool(true);
         }

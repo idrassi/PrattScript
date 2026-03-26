@@ -57,17 +57,21 @@ static void statement_vector_init(StatementVector* vec) {
     vec->capacity = 0;
 }
 
-static void statement_vector_append(StatementVector* vec, Statement* stmt) {
+static bool statement_vector_append(StatementVector* vec, Statement* stmt, Interpreter* interp) {
     if (vec->capacity < vec->count + 1) {
         int old_capacity = vec->capacity;
-        vec->capacity = old_capacity < 8 ? 8 : old_capacity * 2;
-        vec->statements = realloc(vec->statements, sizeof(Statement*) * vec->capacity);
-        if (vec->statements == NULL) {
-            fprintf(stderr, "Fatal: out of memory growing statement vector.\n");
-            exit(1);
+        int new_capacity = old_capacity < 8 ? 8 : old_capacity * 2;
+        Statement** new_statements =
+            realloc(vec->statements, sizeof(Statement*) * (size_t)new_capacity);
+        if (new_statements == NULL) {
+            runtime_error(interp, "Out of memory growing statement vector.");
+            return false;
         }
+        vec->statements = new_statements;
+        vec->capacity = new_capacity;
     }
     vec->statements[vec->count++] = stmt;
+    return true;
 }
 
 static void statement_vector_free(StatementVector* vec) {
@@ -76,6 +80,164 @@ static void statement_vector_free(StatementVector* vec) {
 }
 // --- End Dynamic Array ---
 
+static bool ast_contains_function(ASTNode* node) {
+    if (node == NULL) return false;
+
+    switch (node->type) {
+        case AST_FUNCTION:
+            return true;
+        case AST_BINARY:
+            return ast_contains_function(node->as.binary.left) ||
+                   ast_contains_function(node->as.binary.right);
+        case AST_UNARY:
+            return ast_contains_function(node->as.unary.child);
+        case AST_TERNARY:
+            return ast_contains_function(node->as.ternary.cond) ||
+                   ast_contains_function(node->as.ternary.then_branch) ||
+                   ast_contains_function(node->as.ternary.else_branch);
+        case AST_ASSIGN:
+            return ast_contains_function(node->as.assign.target) ||
+                   ast_contains_function(node->as.assign.value);
+        case AST_CALL:
+            if (ast_contains_function(node->as.call.callee)) return true;
+            for (size_t i = 0; i < node->as.call.argc; ++i) {
+                if (ast_contains_function(node->as.call.args[i])) return true;
+            }
+            return false;
+        case AST_ARRAY:
+            for (size_t i = 0; i < node->as.array.count; ++i) {
+                if (ast_contains_function(node->as.array.elements[i])) return true;
+            }
+            return false;
+        case AST_OBJECT:
+            for (size_t i = 0; i < node->as.object.count; ++i) {
+                if (ast_contains_function(node->as.object.values[i])) return true;
+            }
+            return false;
+        case AST_INDEX:
+            return ast_contains_function(node->as.index.object) ||
+                   ast_contains_function(node->as.index.index);
+        case AST_NUMBER:
+        case AST_STRING:
+        case AST_IDENT:
+        case AST_BOOL:
+        case AST_NIL:
+            return false;
+    }
+
+    return false;
+}
+
+static bool statement_contains_function(Statement* stmt) {
+    if (stmt == NULL) return false;
+
+    switch (stmt->type) {
+        case ST_FUNCTION:
+            return true;
+        case ST_EXPR:
+            return ast_contains_function(stmt->as.expr.expr);
+        case ST_VAR:
+            return ast_contains_function(stmt->as.var.initializer);
+        case ST_BLOCK:
+            for (size_t i = 0; i < stmt->as.block.count; ++i) {
+                if (statement_contains_function(stmt->as.block.list[i])) return true;
+            }
+            return false;
+        case ST_IF:
+            return ast_contains_function(stmt->as.if_s.condition) ||
+                   statement_contains_function(stmt->as.if_s.then_branch) ||
+                   statement_contains_function(stmt->as.if_s.else_branch);
+        case ST_WHILE:
+            return ast_contains_function(stmt->as.while_s.condition) ||
+                   statement_contains_function(stmt->as.while_s.body);
+        case ST_FOR:
+            return statement_contains_function(stmt->as.for_s.initializer) ||
+                   ast_contains_function(stmt->as.for_s.condition) ||
+                   ast_contains_function(stmt->as.for_s.increment) ||
+                   statement_contains_function(stmt->as.for_s.body);
+        case ST_RETURN:
+            return ast_contains_function(stmt->as.ret.value);
+        case ST_BREAK:
+        case ST_CONTINUE:
+            return false;
+    }
+
+    return false;
+}
+
+static bool program_contains_function(const StatementVector* program) {
+    for (int i = 0; i < program->count; ++i) {
+        if (statement_contains_function(program->statements[i])) return true;
+    }
+    return false;
+}
+
+static bool parse_program(Interpreter* interp,
+                          const char* source,
+                          Arena* arena,
+                          StatementVector* program,
+                          const char** error_message) {
+    PrattLexer lex;
+    pratt_lexer_init(&lex, source);
+
+    Parser parser;
+    parser_init(&parser,
+                pratt_lexer_next,
+                &lex,
+                interp,
+                default_rules,
+                default_rule_count,
+                default_token_name,
+                arena);
+
+    while (parser.next.type != T_EOF) {
+        Statement* stmt = parse_statement(&parser);
+        if (parser.had_error) {
+            if (error_message != NULL) {
+                *error_message = parser.last_error.message;
+            }
+            parser_destroy(&parser);
+            return false;
+        }
+        if (stmt && !statement_vector_append(program, stmt, interp)) {
+            if (error_message != NULL) {
+                *error_message = interp->error_message;
+            }
+            parser_destroy(&parser);
+            return false;
+        }
+    }
+
+    parser_destroy(&parser);
+    return true;
+}
+
+static int execute_program(Interpreter* interp, const StatementVector* program) {
+    for (int i = 0; i < program->count; i++) {
+        ExecResult res = execute(interp, program->statements[i]);
+        if (interp->had_error) {
+            fprintf(stderr, "Runtime Error: %s\n", interp->error_message);
+            return 1;
+        }
+        if (res.status == EXEC_BREAK) {
+            runtime_error(interp, "Cannot 'break' outside of a loop.");
+            fprintf(stderr, "Runtime Error: %s\n", interp->error_message);
+            return 1;
+        }
+        if (res.status == EXEC_CONTINUE) {
+            runtime_error(interp, "Cannot 'continue' outside of a loop.");
+            fprintf(stderr, "Runtime Error: %s\n", interp->error_message);
+            return 1;
+        }
+        if (res.status == EXEC_RETURN) {
+            runtime_error(interp, "Cannot 'return' from top-level code.");
+            fprintf(stderr, "Runtime Error: %s\n", interp->error_message);
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 // Top-level function to execute a block of source code.
 // It handles the entire lifecycle: init, parse, execute, destroy.
@@ -90,70 +252,25 @@ static int execute_source(const char* source) {
         return 1;
     }
 
-    // 1. Initialize Parser
-    PrattLexer lex;
-    pratt_lexer_init(&lex, source);
-    Parser parser;
-    parser_init(&parser, pratt_lexer_next, &lex, &interp, default_rules, default_rule_count, default_token_name, &interp.arena);
-
-    // 2. Parse all statements into our dynamic vector.
     StatementVector program;
     statement_vector_init(&program);
 
-    while (parser.next.type != T_EOF) {
-        Statement* stmt = parse_statement(&parser);
-        if (parser.had_error) {
-            // A parse error occurred. Report it and stop.
-            fprintf(stderr, "Parse Error: %s\n", parser.last_error.message);
-            parser_destroy(&parser);
-            statement_vector_free(&program);
-            interpreter_destroy(&interp);
-            return 1;
-        }
-        if (stmt) {
-            statement_vector_append(&program, stmt);
-        }
-    }
-    
-    // The parser is no longer needed; its arena-allocated error message
-    // is now invalid, but the AST lives on in the interpreter's arena.
-    parser_destroy(&parser);
-
-    // 3. Interpret the program
-    for (int i = 0; i < program.count; i++) {
-        ExecResult res = execute(&interp, program.statements[i]);
+    const char* parse_error = NULL;
+    if (!parse_program(&interp, source, &interp.arena, &program, &parse_error)) {
         if (interp.had_error) {
-            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-            statement_vector_free(&program);
-            interpreter_destroy(&interp);
-            return 1;
+            fprintf(stderr, "Error: %s\n", interp.error_message);
+        } else {
+            fprintf(stderr, "Parse Error: %s\n", parse_error);
         }
-        // A break, continue or return at the top level is a runtime error.
-        if (res.status == EXEC_BREAK) {
-            runtime_error(&interp, "Cannot 'break' outside of a loop.");
-            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-            statement_vector_free(&program);
-            interpreter_destroy(&interp);
-            return 1;
-        } else if (res.status == EXEC_CONTINUE) {
-            runtime_error(&interp, "Cannot 'continue' outside of a loop.");
-            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-            statement_vector_free(&program);
-            interpreter_destroy(&interp);
-            return 1;
-        } else if (res.status == EXEC_RETURN) {
-            runtime_error(&interp, "Cannot 'return' from top-level code.");
-            fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-            statement_vector_free(&program);
-            interpreter_destroy(&interp);
-            return 1;
-        }
+        statement_vector_free(&program);
+        interpreter_destroy(&interp);
+        return 1;
     }
 
-    // 4. Clean up
+    int result = execute_program(&interp, &program);
     statement_vector_free(&program);
     interpreter_destroy(&interp);
-    return 0; // Success
+    return result;
 }
 
 static void run_repl() {
@@ -163,6 +280,11 @@ static void run_repl() {
     // For a REPL, we create one long-lived interpreter instance.
     Interpreter interp;
     interpreter_init(&interp, DEFAULT_INITIAL_ARENA_SIZE);
+    if (interp.had_error) {
+        fprintf(stderr, "Initialization Error: %s\n", interp.error_message);
+        interpreter_destroy(&interp);
+        return;
+    }
 
     for (;;) {
         printf("> ");
@@ -175,44 +297,52 @@ static void run_repl() {
             break;
         }
 
-        PrattLexer lex;
-        pratt_lexer_init(&lex, line);
-        Parser parser;
-        parser_init(&parser, pratt_lexer_next, &lex, &interp, default_rules, default_rule_count, default_token_name, &interp.arena);
-        
         // Reset error state for this line
         interp.had_error = 0;
-        
-        while (parser.next.type != T_EOF) {
-            Statement* stmt = parse_statement(&parser);
-            if (parser.had_error) {
-                fprintf(stderr, "Parse Error: %s\n", parser.last_error.message);
-                break; // Stop processing this line
-            }
-            if (stmt) {
-                ExecResult res = execute(&interp, stmt);
+        interp.error_message[0] = '\0';
 
-                if (interp.had_error) {
-                    fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-                    break;
-                }
-                // An unhandled break, continue or return in the REPL is an error.
-                if (res.status == EXEC_BREAK) {
-                   runtime_error(&interp, "Cannot 'break' outside of a loop.");
-                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-                   break;
-                } else if (res.status == EXEC_CONTINUE) {
-                   runtime_error(&interp, "Cannot 'continue' outside of a loop.");
-                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-                   break;
-                } else if (res.status == EXEC_RETURN) {
-                   runtime_error(&interp, "Cannot 'return' from top-level code.");
-                   fprintf(stderr, "Runtime Error: %s\n", interp.error_message);
-                   break;
-                }
+        Arena line_arena;
+        arena_init(&line_arena, DEFAULT_INITIAL_ARENA_SIZE);
+
+        StatementVector program;
+        statement_vector_init(&program);
+
+        const char* parse_error = NULL;
+        if (!parse_program(&interp, line, &line_arena, &program, &parse_error)) {
+            if (interp.had_error) {
+                fprintf(stderr, "Error: %s\n", interp.error_message);
+            } else {
+                fprintf(stderr, "Parse Error: %s\n", parse_error);
             }
+            statement_vector_free(&program);
+            arena_free(&line_arena);
+            continue;
         }
-        parser_destroy(&parser);
+
+        if (program_contains_function(&program)) {
+            statement_vector_free(&program);
+            arena_free(&line_arena);
+
+            statement_vector_init(&program);
+            parse_error = NULL;
+            if (!parse_program(&interp, line, &interp.arena, &program, &parse_error)) {
+                if (interp.had_error) {
+                    fprintf(stderr, "Error: %s\n", interp.error_message);
+                } else {
+                    fprintf(stderr, "Parse Error: %s\n", parse_error);
+                }
+                statement_vector_free(&program);
+                continue;
+            }
+
+            (void)execute_program(&interp, &program);
+            statement_vector_free(&program);
+            continue;
+        }
+
+        (void)execute_program(&interp, &program);
+        statement_vector_free(&program);
+        arena_free(&line_arena);
     }
     
     interpreter_destroy(&interp);
@@ -228,7 +358,7 @@ static char* read_file(const char* path) {
         fprintf(stderr, "Error: Could not get file size for \"%s\".\n", path);
         return NULL;
     }
-    FILE* file = fopen(path, "r");
+    FILE* file = fopen(path, "rb");
     if (file == NULL) {
         fprintf(stderr, "Error: Could not open file \"%s\".\n", path);
         return NULL;
@@ -242,8 +372,9 @@ static char* read_file(const char* path) {
     }
 
     size_t bytes_read = fread(buffer, sizeof(char), file_size, file);
+    int read_error = ferror(file);
     fclose(file);
-    if (bytes_read == 0 || ferror(file)) {
+    if (read_error || bytes_read != file_size) {
         fprintf(stderr, "Error: Could not read the file \"%s\".\n", path);
         free(buffer);
         return NULL;
